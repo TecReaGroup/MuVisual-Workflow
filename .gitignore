@@ -38,3 +38,5 @@ data/midi_fixed/
 
 # Keep directory placeholders if they are added to the repository.
 !data/**/.gitkeep
+
+*.mid
