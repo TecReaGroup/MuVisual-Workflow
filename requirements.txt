@@ -1,2 +1,4 @@
 audio-separator[gpu]
 transkun
+partitura
+mido
