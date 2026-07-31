@@ -16,6 +16,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).parent
 DEFAULT_INPUT = PROJECT_DIR / "data" / "stem_gated" / "一生爱你_(piano)_BS-Roformer-SW.wav"
 DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi" / "一生爱你_(piano)_BS-Roformer-SW.mid"
+ENABLE_QUANTIZE = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,12 +31,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--segment-hop-size", type=int, default=None, help="Optional Transkun segmentHopSize")
     parser.add_argument("--segment-size", type=int, default=None, help="Optional Transkun segmentSize")
-    parser.add_argument(
-        "--quantize",
-        action="store_true",
-        help="Also write a 1/16-note quantized copy with a _quantized suffix. "
-             "The original MIDI is kept unchanged; pedal timing may be affected.",
-    )
     return parser.parse_args()
 
 
@@ -50,35 +45,154 @@ def choose_device(requested: str) -> str:
         return "cpu"
 
 
-def write_quantized_copy(source: Path) -> Path:
+def midi_quantize(source: Path) -> Path:
     try:
         import mido
     except ImportError as exc:
         raise SystemExit("Quantization requires: python -m pip install mido") from exc
 
     midi = mido.MidiFile(source)
-    grid = max(1, round(midi.ticks_per_beat / 4))
-    quantized_tracks = []
+    c4_note = 60
+    time_threshold = 100
+
     for track in midi.tracks:
-        absolute = 0
-        events = []
+        if not any(message.type in {"note_on", "note_off"} for message in track):
+            continue
+
+        notes_on = []
+        notes_off = []
+        other_events = []
+        current_time = 0
         for message in track:
-            absolute += message.time
-            target = absolute
-            if message.type in {"note_on", "note_off"}:
-                target = max(0, round(absolute / grid) * grid)
-            events.append((target, message.copy()))
-        output_track = mido.MidiTrack()
-        previous = 0
-        for tick, message in events:
-            message.time = max(0, tick - previous)
-            previous = tick
-            output_track.append(message)
-        quantized_tracks.append(output_track)
-    midi.tracks = quantized_tracks
+            current_time += message.time
+            if message.type == "note_on" and message.velocity > 0:
+                notes_on.append({
+                    "time": current_time,
+                    "note": message.note,
+                    "velocity": message.velocity,
+                    "channel": message.channel,
+                })
+            elif message.type == "note_off" or (
+                message.type == "note_on" and message.velocity == 0
+            ):
+                notes_off.append({
+                    "time": current_time,
+                    "note": message.note,
+                    "velocity": message.velocity if message.type == "note_off" else 0,
+                    "channel": message.channel,
+                })
+            else:
+                other_events.append({"time": current_time, "msg": message})
+
+        def process_hand_notes(hand_notes: list[dict]) -> None:
+            hand_notes.sort(key=lambda note: note["time"])
+            index = 0
+            while index < len(hand_notes):
+                current = hand_notes[index]["time"]
+                simultaneous = [hand_notes[index]]
+                next_index = index + 1
+                while (
+                    next_index < len(hand_notes)
+                    and hand_notes[next_index]["time"] - current <= time_threshold
+                ):
+                    simultaneous.append(hand_notes[next_index])
+                    next_index += 1
+
+                if next_index < len(hand_notes):
+                    next_time = hand_notes[next_index]["time"]
+                    for note in simultaneous:
+                        best_off = None
+                        best_distance = float("inf")
+                        for off in notes_off:
+                            if (
+                                off["note"] == note["note"]
+                                and off["channel"] == note["channel"]
+                                and off["time"] > note["time"]
+                                and not off.get("processed", False)
+                            ):
+                                distance = off["time"] - note["time"]
+                                if distance < best_distance:
+                                    best_distance = distance
+                                    best_off = off
+                        if best_off is not None:
+                            best_off["time"] = max(note["time"] + 100, next_time - 10)
+                            best_off["processed"] = True
+                index = next_index
+
+        process_hand_notes([note for note in notes_on if note["note"] <= c4_note])
+        process_hand_notes([note for note in notes_on if note["note"] > c4_note])
+
+        all_events = (
+            [("note_on", note["time"], note) for note in notes_on]
+            + [("note_off", note["time"], note) for note in notes_off]
+            + [("other", event["time"], event) for event in other_events]
+        )
+        all_events.sort(key=lambda event: event[1])
+
+        rebuilt = mido.MidiTrack()
+        last_time = 0
+        for event_type, event_time, event_data in all_events:
+            delta = event_time - last_time
+            if event_type == "note_on":
+                message = mido.Message(
+                    "note_on",
+                    channel=event_data["channel"],
+                    note=event_data["note"],
+                    velocity=event_data["velocity"],
+                    time=delta,
+                )
+            elif event_type == "note_off":
+                message = mido.Message(
+                    "note_off",
+                    channel=event_data["channel"],
+                    note=event_data["note"],
+                    velocity=event_data["velocity"],
+                    time=delta,
+                )
+            else:
+                message = event_data["msg"].copy(time=delta)
+            rebuilt.append(message)
+            last_time = event_time
+        track.clear()
+        track.extend(rebuilt)
+
+    trim_midi_silence(midi)
     output = source.with_name(f"{source.stem}_quantized{source.suffix}")
     midi.save(output)
     return output
+
+
+def trim_midi_silence(midi) -> None:
+    first_note_time = float("inf")
+    last_note_time = 0
+    for track in midi.tracks:
+        current_time = 0
+        has_note = False
+        for message in track:
+            current_time += message.time
+            if message.type == "note_on" and message.velocity > 0:
+                first_note_time = min(first_note_time, current_time)
+                last_note_time = max(last_note_time, current_time)
+                has_note = True
+    if first_note_time == float("inf"):
+        return
+
+    for track in midi.tracks:
+        current_time = 0
+        kept = []
+        for message in track:
+            current_time += message.time
+            if (
+                first_note_time <= current_time <= last_note_time + 1000
+                or message.type in {"set_tempo", "key_signature", "time_signature"}
+                or current_time < first_note_time
+            ):
+                kept.append((max(0, current_time - first_note_time), message))
+        track.clear()
+        previous = 0
+        for absolute_time, message in kept:
+            track.append(message.copy(time=absolute_time - previous))
+            previous = absolute_time
 
 
 def main() -> None:
@@ -115,8 +229,8 @@ def main() -> None:
     if not output_path.is_file():
         raise SystemExit(f"Transkun completed but did not create: {output_path}")
     print(f"Done: {output_path}")
-    if args.quantize:
-        quantized_path = write_quantized_copy(output_path)
+    if ENABLE_QUANTIZE:
+        quantized_path = midi_quantize(output_path)
         print(f"Quantized copy: {quantized_path}")
 
 
