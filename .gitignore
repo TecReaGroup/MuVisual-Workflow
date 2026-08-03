@@ -28,15 +28,19 @@ Thumbs.db
 .env.*
 *.log
 
-# Large local audio/model assets and generated outputs
-data/audio/
-data/model/
-data/stem/
-data/stem_gated/
-data/midi/
-data/midi_fixed/
-
 # Keep directory placeholders if they are added to the repository.
 !data/**/.gitkeep
 
-*.mid
+# Large local audio/model assets and generated outputs
+data/audio/*
+!data/audio/.gitkeep
+data/model/*
+!data/model/.gitkeep
+data/stem/*
+!data/stem/.gitkeep
+data/stem_gated/*
+!data/stem_gated/.gitkeep
+data/midi/*
+!data/midi/.gitkeep
+data/midi_fixed/*
+!data/midi_fixed/.gitkeep
