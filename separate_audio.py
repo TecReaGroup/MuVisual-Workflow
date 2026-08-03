@@ -11,12 +11,76 @@ SW checkpoint available in your installed version.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from pathlib import Path
+import shutil
+import subprocess
+from tempfile import TemporaryDirectory
+from typing import Iterator
 
 DEFAULT_INPUT_DIR = Path(__file__).parent / "data" / "audio"
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "data" / "stem"
 DEFAULT_MODEL_DIR = Path(__file__).parent / "data" / "model" / "BS-Rofo-SW"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
+AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aiff", ".ac3"}
+
+
+def _convert_m4a_to_wav(source: Path, destination: Path) -> None:
+    """Decode an M4A audio stream to a libsndfile-compatible PCM WAV."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise SystemExit(
+            "M4A input requires FFmpeg, but ffmpeg was not found on PATH. "
+            "Install FFmpeg and restart the terminal before trying again."
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostdin",
+        "-y",
+        "-i", str(source),
+        "-map", "0:a:0",
+        "-vn",
+        "-c:a", "pcm_s16le",
+        str(destination),
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() or str(exc)
+        raise SystemExit(f"Could not decode M4A file {source}: {detail}") from exc
+
+
+@contextmanager
+def _separator_input(input_path: Path) -> Iterator[Path | list[Path]]:
+    """Yield input suitable for audio-separator, transcoding M4A files temporarily."""
+    if input_path.is_file():
+        audio_files = [input_path]
+    else:
+        audio_files = sorted(
+            path for path in input_path.rglob("*")
+            if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+        )
+
+    m4a_files = [path for path in audio_files if path.suffix.lower() == ".m4a"]
+    if not m4a_files:
+        yield input_path
+        return
+
+    with TemporaryDirectory(prefix="muvisual-m4a-") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        converted: dict[Path, Path] = {}
+        for index, source in enumerate(m4a_files):
+            destination = temporary_root / str(index) / f"{source.stem}.wav"
+            print(f"Decoding M4A input: {source}")
+            _convert_m4a_to_wav(source, destination)
+            converted[source] = destination
+
+        prepared = [converted.get(path, path) for path in audio_files]
+        yield prepared[0] if input_path.is_file() else prepared
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,7 +139,12 @@ def main() -> None:
     separator.load_model(model_filename=args.model)
 
     print(f"Separating {input_path} -> {output_dir}")
-    output_files = separator.separate(str(input_path))
+    with _separator_input(input_path) as prepared_input:
+        if isinstance(prepared_input, list):
+            separator_input = [str(path) for path in prepared_input]
+        else:
+            separator_input = str(prepared_input)
+        output_files = separator.separate(separator_input)
     print(f"Done. Generated {len(output_files)} stem file(s):")
     for output_file in output_files:
         print(f"  {output_file}")
