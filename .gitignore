@@ -44,3 +44,8 @@ data/midi/*
 !data/midi/.gitkeep
 data/midi_fixed/*
 !data/midi_fixed/.gitkeep
+
+*.mid
+*.mp3
+*.wav
+*.m4a
