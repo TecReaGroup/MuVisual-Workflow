@@ -25,6 +25,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 DEFAULT_INPUT = ROOT / "data" / "midi"
 DEFAULT_OUTPUT = ROOT / "data" / "midi_fixed"
+ALIGNMENT_SAMPLE_COUNT = 35
 
 MAJOR_PROFILE = (6.35, 2.18, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
 MINOR_PROFILE = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
@@ -129,7 +130,7 @@ def estimate_delay(
     for onset, velocity, duration in ordered_onsets:
         if duration >= minimum_duration:
             samples.append((onset, velocity))
-        if len(samples) == 30:
+        if len(samples) == ALIGNMENT_SAMPLE_COUNT:
             break
     if not samples:
         return 0.0, 0, 0, 0.0
@@ -305,11 +306,15 @@ def main() -> None:
             source,
             destination,
         )
+        negative_count = sample_count - positive_count
+        average_error = alignment_error / sample_count if sample_count else 0.0
         print(
             f"{source.name}: key={key}, bpm={bpm:.2f}, "
             f"delay={delay * 1000:.1f}ms, "
             f"positive={positive_count}/{sample_count}, "
-            f"error={alignment_error * 1000:.1f}ms -> {destination}"
+            f"negative={negative_count}/{sample_count}, "
+            f"error={alignment_error * 1000:.1f}ms, "
+            f"average_error={average_error * 1000:.1f}ms -> {destination}"
         )
 
 
