@@ -1,22 +1,42 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import re
 import shutil
 import subprocess
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import mutagen
 
-from separate_audio import AUDIO_EXTENSIONS, DEFAULT_MODEL, DEFAULT_MODEL_DIR
+from separate_audio import (
+    AUDIO_EXTENSIONS,
+    DEFAULT_MODEL,
+    DEFAULT_MODEL_DIR,
+    create_separator,
+    separate_with_loaded_model,
+)
+from transcribe_piano import TranskunTranscriber, midi_quantize
 
 ROOT = Path(__file__).parent
 DEFAULT_INPUT = ROOT / "data" / "input"
 DEFAULT_OUTPUT = ROOT / "data" / "output"
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+@dataclass
+class PreparedAudio:
+    source: Path
+    output_name: str
+    destination_dir: Path
+    result_dir: Path
+    gated_piano: Path
+    midi_dir: Path
+    fixed_dir: Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,68 +123,83 @@ def convert_to_mp3(source: Path, destination: Path) -> None:
     )
 
 
-def process_audio(
+def prepare_audio(
     source: Path,
     output_name: str,
     output_root: Path,
-    args: argparse.Namespace,
-) -> None:
+    work_dir: Path,
+    separator: object,
+) -> PreparedAudio:
     destination_dir = output_root / output_name
+    stem_dir = work_dir / "stem"
+    piano_stem_dir = work_dir / "piano_stem"
+    gated_dir = work_dir / "stem_gated"
+    midi_dir = work_dir / "midi"
+    fixed_dir = work_dir / "midi_fixed"
+    result_dir = work_dir / "result"
+    result_dir.mkdir(parents=True)
 
-    with TemporaryDirectory(prefix=f"muvisual-{output_name}-") as temporary_dir:
-        work_dir = Path(temporary_dir)
-        stem_dir = work_dir / "stem"
-        piano_stem_dir = work_dir / "piano_stem"
-        gated_dir = work_dir / "stem_gated"
-        midi_dir = work_dir / "midi"
-        fixed_dir = work_dir / "midi_fixed"
-        result_dir = work_dir / "result"
-        result_dir.mkdir()
+    original_mp3 = result_dir / f"{output_name}.mp3"
+    piano_mp3 = result_dir / f"{output_name}_piano.mp3"
+    convert_to_mp3(source, original_mp3)
+    output_files = separate_with_loaded_model(separator, source, stem_dir)
+    print(f"Generated {len(output_files)} stem file(s): {', '.join(output_files)}")
+    piano_stem = find_piano_stem(stem_dir)
+    piano_stem_dir.mkdir()
+    shutil.copy2(piano_stem, piano_stem_dir / piano_stem.name)
+    run_script("gate_stems.py", "--input", piano_stem_dir, "--output", gated_dir)
+    gated_piano = gated_dir / piano_stem.name
+    if not gated_piano.is_file():
+        raise RuntimeError(f"Gated piano stem was not created: {gated_piano}")
+    convert_to_mp3(gated_piano, piano_mp3)
 
-        original_mp3 = result_dir / f"{output_name}.mp3"
-        piano_mp3 = result_dir / f"{output_name}_piano.mp3"
-        midi_path = midi_dir / f"{output_name}.mid"
-        quantized_path = midi_dir / f"{output_name}_quantized.mid"
+    return PreparedAudio(
+        source=source,
+        output_name=output_name,
+        destination_dir=destination_dir,
+        result_dir=result_dir,
+        gated_piano=gated_piano,
+        midi_dir=midi_dir,
+        fixed_dir=fixed_dir,
+    )
 
-        convert_to_mp3(source, original_mp3)
-        run_script(
-            "separate_audio.py",
-            "--input", source,
-            "--output", stem_dir,
-            "--model", args.model,
-            "--model-dir", args.model_dir,
-        )
-        piano_stem = find_piano_stem(stem_dir)
-        piano_stem_dir.mkdir()
-        shutil.copy2(piano_stem, piano_stem_dir / piano_stem.name)
-        run_script("gate_stems.py", "--input", piano_stem_dir, "--output", gated_dir)
-        gated_piano = gated_dir / piano_stem.name
-        if not gated_piano.is_file():
-            raise RuntimeError(f"Gated piano stem was not created: {gated_piano}")
-        convert_to_mp3(gated_piano, piano_mp3)
 
-        transcribe_arguments: list[object] = [
-            "--input", gated_piano,
-            "--output", midi_path,
-            "--device", args.device,
-        ]
-        if args.segment_hop_size is not None:
-            transcribe_arguments.extend(["--segment-hop-size", args.segment_hop_size])
-        if args.segment_size is not None:
-            transcribe_arguments.extend(["--segment-size", args.segment_size])
-        run_script("transcribe_piano.py", *transcribe_arguments)
-        if not midi_path.is_file() or not quantized_path.is_file():
-            raise RuntimeError("Transcription did not create both MIDI files")
+def finish_audio(job: PreparedAudio, transcriber: TranskunTranscriber) -> None:
+    midi_path = job.midi_dir / f"{job.output_name}.mid"
+    quantized_path = job.midi_dir / f"{job.output_name}_quantized.mid"
 
-        run_script("fix_midi.py", "--input", midi_dir, "--output", fixed_dir)
-        fixed_midi = fixed_dir / midi_path.name
-        fixed_quantized = fixed_dir / quantized_path.name
-        if not fixed_midi.is_file() or not fixed_quantized.is_file():
-            raise RuntimeError("MIDI fix did not create both output files")
+    print(f"Transcribing: {job.gated_piano}")
+    transcriber.transcribe(job.gated_piano, midi_path)
+    midi_quantize(midi_path)
+    if not midi_path.is_file() or not quantized_path.is_file():
+        raise RuntimeError("Transcription did not create both MIDI files")
 
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        for result in (original_mp3, piano_mp3, fixed_midi, fixed_quantized):
-            shutil.copy2(result, destination_dir / result.name)
+    run_script("fix_midi.py", "--input", job.midi_dir, "--output", job.fixed_dir)
+    fixed_midi = job.fixed_dir / midi_path.name
+    fixed_quantized = job.fixed_dir / quantized_path.name
+    if not fixed_midi.is_file() or not fixed_quantized.is_file():
+        raise RuntimeError("MIDI fix did not create both output files")
+
+    job.destination_dir.mkdir(parents=True, exist_ok=True)
+    results = (
+        job.result_dir / f"{job.output_name}.mp3",
+        job.result_dir / f"{job.output_name}_piano.mp3",
+        fixed_midi,
+        fixed_quantized,
+    )
+    for result in results:
+        shutil.copy2(result, job.destination_dir / result.name)
+
+
+def release_separator(separator: object) -> None:
+    model_instance = getattr(separator, "model_instance", None)
+    if hasattr(separator, "model_instance"):
+        separator.model_instance = None
+    del model_instance
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def main() -> None:
@@ -203,15 +238,52 @@ def main() -> None:
         else:
             unique_audio_files.append((source, output_name))
 
-    for index, (source, output_name) in enumerate(unique_audio_files, start=1):
-        print(f"\n[{index}/{len(audio_files)}] Processing: {source}")
-        try:
-            process_audio(source, output_name, output_dir, args)
-        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            failures.append((source, str(exc)))
-            print(f"Failed: {source}: {exc}", file=sys.stderr)
-        else:
-            print(f"Completed: {output_dir / output_name}")
+    with TemporaryDirectory(prefix="muvisual-batch-") as temporary_dir:
+        batch_work_dir = Path(temporary_dir)
+        separator = create_separator(
+            batch_work_dir / "separator",
+            args.model,
+            args.model_dir,
+            output_single_stem="Piano",
+        )
+        prepared_jobs: list[PreparedAudio] = []
+        for index, (source, output_name) in enumerate(unique_audio_files, start=1):
+            print(f"\n[Separate {index}/{len(unique_audio_files)}] Processing: {source}")
+            try:
+                job = prepare_audio(
+                    source,
+                    output_name,
+                    output_dir,
+                    batch_work_dir / str(index),
+                    separator,
+                )
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                failures.append((source, str(exc)))
+                print(f"Failed: {source}: {exc}", file=sys.stderr)
+            else:
+                prepared_jobs.append(job)
+
+        release_separator(separator)
+        del separator
+
+        if prepared_jobs:
+            transcriber = TranskunTranscriber(
+                device=args.device,
+                segment_hop_size=args.segment_hop_size,
+                segment_size=args.segment_size,
+            )
+            for index, job in enumerate(prepared_jobs, start=1):
+                print(
+                    f"\n[Transcribe {index}/{len(prepared_jobs)}] Processing: "
+                    f"{job.source}"
+                )
+                try:
+                    finish_audio(job, transcriber)
+                except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                    failures.append((job.source, str(exc)))
+                    print(f"Failed: {job.source}: {exc}", file=sys.stderr)
+                else:
+                    print(f"Completed: {job.destination_dir}")
 
     if failures:
         details = "\n".join(f"  {source}: {error}" for source, error in failures)

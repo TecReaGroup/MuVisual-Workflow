@@ -16,7 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 from tempfile import TemporaryDirectory
-from typing import Iterator
+from typing import Any, Iterator
 
 DEFAULT_INPUT_DIR = Path(__file__).parent / "data" / "audio"
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "data" / "stem"
@@ -98,25 +98,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    input_path = args.input.expanduser().resolve()
-    output_dir = args.output.expanduser().resolve()
-
-    if not input_path.exists():
-        raise SystemExit(f"Input path does not exist: {input_path}")
-    if input_path.is_dir() and not any(input_path.rglob("*")):
-        raise SystemExit(f"Input directory is empty: {input_path}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    model_dir = args.model_dir.expanduser().resolve() if args.model_dir else None
+def create_separator(
+    output_dir: Path,
+    model: str,
+    model_dir: Path | None,
+    output_single_stem: str | None = None,
+) -> Any:
     if model_dir is not None and not model_dir.is_dir():
         raise SystemExit(f"Model directory does not exist: {model_dir}")
-    if model_dir is not None and not (model_dir / args.model).is_file():
+    if model_dir is not None and not (model_dir / model).is_file():
         available = sorted(path.name for path in model_dir.glob("*.ckpt"))
         detail = f" Available checkpoints: {', '.join(available)}" if available else ""
         raise SystemExit(
-            f"Model checkpoint does not exist: {model_dir / args.model}.{detail} "
+            f"Model checkpoint does not exist: {model_dir / model}.{detail} "
             "Rename the local checkpoint to the supported filename or pass --model with that filename."
         )
 
@@ -130,13 +124,43 @@ def main() -> None:
             ) from exc
         raise
 
-    separator_kwargs = {"output_dir": str(output_dir), "output_format": "WAV"}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    separator_kwargs = {
+        "output_dir": str(output_dir),
+        "output_format": "WAV",
+        "output_single_stem": output_single_stem,
+    }
     if model_dir is not None:
         separator_kwargs["model_file_dir"] = str(model_dir)
 
     separator = Separator(**separator_kwargs)
-    print(f"Loading model: {args.model}")
-    separator.load_model(model_filename=args.model)
+    print(f"Loading model: {model}")
+    separator.load_model(model_filename=model)
+    model_instance = separator.model_instance
+    if output_single_stem is not None and hasattr(model_instance, "process_all_stems"):
+        instruments = list(model_instance.model_data_cfgdict.training.instruments)
+        matching_stem = next(
+            (stem for stem in instruments if stem.casefold() == output_single_stem.casefold()),
+            None,
+        )
+        if matching_stem is None:
+            raise SystemExit(
+                f"Stem {output_single_stem!r} is not available. Available stems: "
+                + ", ".join(instruments)
+            )
+        model_instance.process_all_stems = False
+        model_instance.primary_stem_name = matching_stem
+        if model_instance.secondary_stem_name == matching_stem:
+            model_instance.secondary_stem_name = next(
+                stem for stem in instruments if stem != matching_stem
+            )
+    return separator
+
+
+def separate_with_loaded_model(separator: Any, input_path: Path, output_dir: Path) -> list[str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    separator.output_dir = str(output_dir)
+    separator.model_instance.output_dir = str(output_dir)
 
     print(f"Separating {input_path} -> {output_dir}")
     with _separator_input(input_path) as prepared_input:
@@ -145,6 +169,22 @@ def main() -> None:
         else:
             separator_input = str(prepared_input)
         output_files = separator.separate(separator_input)
+    return output_files
+
+
+def main() -> None:
+    args = parse_args()
+    input_path = args.input.expanduser().resolve()
+    output_dir = args.output.expanduser().resolve()
+
+    if not input_path.exists():
+        raise SystemExit(f"Input path does not exist: {input_path}")
+    if input_path.is_dir() and not any(input_path.rglob("*")):
+        raise SystemExit(f"Input directory is empty: {input_path}")
+
+    model_dir = args.model_dir.expanduser().resolve() if args.model_dir else None
+    separator = create_separator(output_dir, args.model, model_dir)
+    output_files = separate_with_loaded_model(separator, input_path, output_dir)
     print(f"Done. Generated {len(output_files)} stem file(s):")
     for output_file in output_files:
         print(f"  {output_file}")
