@@ -12,6 +12,7 @@ relative to one another.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 
@@ -112,18 +113,88 @@ def estimate_bpm(onsets: list[float]) -> float:
     return sum(bpm * score for bpm, score in nearby) / sum(score for _, score in nearby)
 
 
+def estimate_delay(
+    notes: list[tuple[float, int, float]],
+    beat_seconds: float,
+) -> tuple[float, int, int, float]:
+    """Find the positive time offset of the BPM grid, without moving MIDI.
+
+    With ``grid_delay`` as the returned value, the positive/negative beat grid
+    is ``grid_delay + k * (beat_seconds / 2)``. Each onset is scored by its
+    distance to the closest grid line before or after it.
+    """
+    ordered_onsets = sorted(notes)
+    minimum_duration = beat_seconds * 1.7 / 4.0
+    samples: list[tuple[float, int]] = []
+    for onset, velocity, duration in ordered_onsets:
+        if duration >= minimum_duration:
+            samples.append((onset, velocity))
+        if len(samples) == 30:
+            break
+    if not samples:
+        return 0.0, 0, 0, 0.0
+
+    half_beat = beat_seconds / 2.0
+
+    def alignment_scores(grid_delay: float) -> tuple[float, int, float]:
+        grid_error = 0.0
+        positive_beat_count = 0
+        accent_error = 0.0
+        for onset, velocity in samples:
+            phase = (onset - grid_delay) % half_beat
+            distance_to_previous = phase
+            distance_to_next = half_beat - phase
+            grid_error += min(distance_to_previous, distance_to_next)
+
+            nearest_grid_index = round((onset - grid_delay) / half_beat)
+            if nearest_grid_index % 2 == 0:
+                positive_beat_count += 1
+            else:
+                beat_phase = (onset - grid_delay) % beat_seconds
+                distance_to_previous_beat = beat_phase
+                distance_to_next_beat = beat_seconds - beat_phase
+                accent_error += min(distance_to_previous_beat, distance_to_next_beat) * velocity
+        return grid_error, positive_beat_count, accent_error
+
+    resolution = 0.0001
+    candidate_count = math.floor(half_beat / resolution)
+    base_grid_delay = 0.0
+    base_grid_error = alignment_scores(base_grid_delay)[0]
+    for index in range(1, candidate_count + 1):
+        grid_delay = index * resolution
+        grid_error = alignment_scores(grid_delay)[0]
+        if grid_error < base_grid_error:
+            base_grid_delay = grid_delay
+            base_grid_error = grid_error
+
+    mirrored_delays = (base_grid_delay, base_grid_delay + half_beat)
+    mirrored_scores = {
+        grid_delay: alignment_scores(grid_delay)
+        for grid_delay in mirrored_delays
+    }
+    best_grid_delay = min(
+        mirrored_delays,
+        key=lambda grid_delay: (
+            -mirrored_scores[grid_delay][1],
+            mirrored_scores[grid_delay][2],
+            grid_delay,
+        ),
+    )
+    best_grid_error, best_positive_count, _ = mirrored_scores[best_grid_delay]
+    return best_grid_delay, best_positive_count, len(samples), best_grid_error
+
+
 def normalize_track(
     track: mido.MidiTrack,
     ticks_per_beat: int,
     tempos: list[tuple[int, int]],
     new_tempo: int,
-    shift_seconds: float,
 ) -> mido.MidiTrack:
     events: list[tuple[int, mido.Message]] = []
     absolute = 0
     for msg in track:
         absolute += msg.time
-        seconds = tick_to_seconds(absolute, ticks_per_beat, tempos) + shift_seconds
+        seconds = tick_to_seconds(absolute, ticks_per_beat, tempos)
         new_tick = round(mido.second2tick(max(0.0, seconds), ticks_per_beat, new_tempo))
         events.append((new_tick, msg.copy()))
 
@@ -160,25 +231,40 @@ def remove_key_signature_events(track: mido.MidiTrack) -> None:
     track[:] = messages
 
 
-def normalize_file(source: Path, destination: Path) -> tuple[str, float]:
+def normalize_file(source: Path, destination: Path) -> tuple[str, float, float, int, int, float]:
     mid = mido.MidiFile(source)
     key = estimate_key(mid)
     tempos = tempo_map(mid)
     onset_seconds = []
+    note_events = []
     for track in mid.tracks:
         absolute = 0
+        active_notes: dict[tuple[int, int], list[tuple[float, int]]] = {}
         for msg in track:
             absolute += msg.time
             if msg.type == "note_on" and msg.velocity:
-                onset_seconds.append(tick_to_seconds(absolute, mid.ticks_per_beat, tempos))
+                onset = tick_to_seconds(absolute, mid.ticks_per_beat, tempos)
+                onset_seconds.append(onset)
+                note_key = (msg.channel, msg.note)
+                active_notes.setdefault(note_key, []).append((onset, msg.velocity))
+            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+                note_key = (msg.channel, msg.note)
+                starts = active_notes.get(note_key)
+                if starts:
+                    onset, velocity = starts.pop(0)
+                    release = tick_to_seconds(absolute, mid.ticks_per_beat, tempos)
+                    note_events.append((onset, velocity, max(0.0, release - onset)))
     bpm = estimate_bpm(onset_seconds)
     new_tempo = mido.bpm2tempo(bpm)
-    first_onset = min(onset_seconds, default=0.0)
     beat_seconds = 60.0 / bpm
-    remainder = first_onset % beat_seconds
-    shift_seconds = -remainder if remainder <= beat_seconds / 2 else beat_seconds - remainder
+    (
+        grid_delay_seconds,
+        positive_count,
+        sample_count,
+        alignment_error,
+    ) = estimate_delay(note_events, beat_seconds)
     tracks = [
-        normalize_track(track, mid.ticks_per_beat, tempos, new_tempo, shift_seconds)
+        normalize_track(track, mid.ticks_per_beat, tempos, new_tempo)
         for track in mid.tracks
     ]
     # Keep one global tempo at the beginning of the first track.
@@ -186,13 +272,19 @@ def normalize_file(source: Path, destination: Path) -> tuple[str, float]:
         remove_tempo_events(track)
         remove_key_signature_events(track)
     tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=new_tempo, time=0))
+    # FF01 delay is a global BPM-grid offset; MIDI event times stay unchanged.
+    delay_metadata = json.dumps(
+        {"delay": {"timestamp": 0, "duration": grid_delay_seconds}},
+        separators=(",", ":"),
+    )
+    tracks[0].insert(1, mido.MetaMessage("text", text=delay_metadata, time=0))
     key_for_midi = midi_key_signature(key)
     if key_for_midi is not None:
-        tracks[0].insert(1, mido.MetaMessage("key_signature", key=key_for_midi, time=0))
+        tracks[0].insert(2, mido.MetaMessage("key_signature", key=key_for_midi, time=0))
     mid.tracks = tracks
     destination.parent.mkdir(parents=True, exist_ok=True)
     mid.save(destination)
-    return key, bpm
+    return key, bpm, grid_delay_seconds, positive_count, sample_count, alignment_error
 
 
 def main() -> None:
@@ -209,8 +301,16 @@ def main() -> None:
         raise SystemExit(f"No MIDI files found in {args.input.resolve()}")
     for source in files:
         destination = args.output / source.name
-        key, bpm = normalize_file(source, destination)
-        print(f"{source.name}: key={key}, bpm={bpm:.2f} -> {destination}")
+        key, bpm, delay, positive_count, sample_count, alignment_error = normalize_file(
+            source,
+            destination,
+        )
+        print(
+            f"{source.name}: key={key}, bpm={bpm:.2f}, "
+            f"delay={delay * 1000:.1f}ms, "
+            f"positive={positive_count}/{sample_count}, "
+            f"error={alignment_error * 1000:.1f}ms -> {destination}"
+        )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,11 @@
 
 instrument separation model download link: <https://huggingface.co/buckets/Trgroup/BS-ROFO-SW-Fixed-bucket>
 
+## Introduction
+
+MuVisual is a tool for visualizing music.
+Now, The default sheet music is in 4/4 time.
+
 ## Develop
 
 ```bash

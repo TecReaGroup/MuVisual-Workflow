@@ -156,7 +156,6 @@ def midi_quantize(source: Path) -> Path:
         track.clear()
         track.extend(rebuilt)
 
-    trim_midi_silence(midi)
     output = source.with_name(f"{source.stem}_quantized{source.suffix}")
     midi.save(output)
     return output
