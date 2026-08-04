@@ -2,3 +2,5 @@ audio-separator[gpu]
 transkun
 partitura
 mido
+mutagen
+Mutagen
