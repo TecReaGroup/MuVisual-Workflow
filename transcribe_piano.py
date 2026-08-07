@@ -15,7 +15,7 @@ from typing import Any
 PROJECT_DIR = Path(__file__).parent
 DEFAULT_INPUT = PROJECT_DIR / "data" / "stem_gated"
 DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi"
-INSTRUMENTS = ["piano"]
+INSTRUMENTS = ["other"]
 ENABLE_QUANTIZE = True
 
 
