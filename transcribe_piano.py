@@ -13,15 +13,26 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_DIR = Path(__file__).parent
-DEFAULT_INPUT = PROJECT_DIR / "data" / "stem_gated" / "一生爱你_(piano)_BS-Roformer-SW.wav"
-DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi" / "一生爱你_(piano)_BS-Roformer-SW.mid"
+DEFAULT_INPUT = PROJECT_DIR / "data" / "stem_gated"
+DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi"
+INSTRUMENTS = ["piano"]
 ENABLE_QUANTIZE = True
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Transcribe a piano stem to MIDI with Transkun.")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help=f"Input WAV (default: {DEFAULT_INPUT})")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help=f"Output MIDI (default: {DEFAULT_OUTPUT})")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT,
+        help=f"Input WAV file or folder (default: {DEFAULT_INPUT})",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help=f"Output MIDI file or folder (default: {DEFAULT_OUTPUT})",
+    )
     parser.add_argument(
         "--device",
         choices=("auto", "cuda", "cpu"),
@@ -254,22 +265,14 @@ def trim_midi_silence(midi) -> None:
             previous = absolute_time
 
 
-def main() -> None:
-    args = parse_args()
-    input_path = args.input.expanduser().resolve()
-    output_path = args.output.expanduser().resolve()
-    if not input_path.is_file():
-        raise SystemExit(f"Input audio does not exist: {input_path}")
-
-    device = choose_device(args.device)
+def transcribe_file(
+    input_path: Path,
+    output_path: Path,
+    transcriber: TranskunTranscriber,
+) -> None:
     print(f"Transcribing: {input_path}")
-    print(f"Device: {device}")
+    print(f"Device: {transcriber.device}")
     print(f"Output: {output_path}")
-    transcriber = TranskunTranscriber(
-        device=device,
-        segment_hop_size=args.segment_hop_size,
-        segment_size=args.segment_size,
-    )
     transcriber.transcribe(input_path, output_path)
 
     if not output_path.is_file():
@@ -278,6 +281,56 @@ def main() -> None:
     if ENABLE_QUANTIZE:
         quantized_path = midi_quantize(output_path)
         print(f"Quantized copy: {quantized_path}")
+
+
+def is_selected_instrument(audio_path: Path) -> bool:
+    if not INSTRUMENTS:
+        return True
+    filename = audio_path.name.casefold()
+    return any(f"_({instrument.casefold()})_" in filename for instrument in INSTRUMENTS)
+
+
+def main() -> None:
+    args = parse_args()
+    input_path = args.input.expanduser().resolve()
+    configured_output = args.output.expanduser().resolve()
+
+    if input_path.is_file():
+        if input_path.suffix.lower() != ".wav":
+            raise SystemExit(f"Input audio must be a WAV file: {input_path}")
+        output_path = (
+            configured_output
+            if configured_output.suffix.lower() == ".mid"
+            else configured_output / f"{input_path.stem}.mid"
+        )
+        inputs = [(input_path, output_path)]
+    elif input_path.is_dir():
+        inputs = []
+        for audio_path in sorted(
+            path
+            for path in input_path.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() == ".wav"
+            and is_selected_instrument(path)
+        ):
+            relative_path = audio_path.relative_to(input_path).with_suffix(".mid")
+            inputs.append((audio_path, configured_output / relative_path))
+        if not inputs:
+            instrument_text = ", ".join(INSTRUMENTS) if INSTRUMENTS else "all"
+            raise SystemExit(
+                f"Input folder contains no matching WAV files "
+                f"(instruments: {instrument_text}): {input_path}"
+            )
+    else:
+        raise SystemExit(f"Input audio does not exist: {input_path}")
+
+    transcriber = TranskunTranscriber(
+        device=args.device,
+        segment_hop_size=args.segment_hop_size,
+        segment_size=args.segment_size,
+    )
+    for audio_path, output_path in inputs:
+        transcribe_file(audio_path, output_path, transcriber)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from transcribe_piano import TranskunTranscriber, midi_quantize
 ROOT = Path(__file__).parent
 DEFAULT_INPUT = ROOT / "data" / "input"
 DEFAULT_OUTPUT = ROOT / "data" / "output"
+TEMP_DIR = ROOT / "temp"
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -180,15 +181,36 @@ def finish_audio(job: PreparedAudio, transcriber: TranskunTranscriber) -> None:
     if not fixed_midi.is_file() or not fixed_quantized.is_file():
         raise RuntimeError("MIDI fix did not create both output files")
 
-    job.destination_dir.mkdir(parents=True, exist_ok=True)
-    results = (
-        job.result_dir / f"{job.output_name}.mp3",
-        job.result_dir / f"{job.output_name}_piano.mp3",
-        fixed_midi,
-        fixed_quantized,
+    shutil.copy2(fixed_midi, job.result_dir / fixed_midi.name)
+    shutil.copy2(fixed_quantized, job.result_dir / fixed_quantized.name)
+
+    missing_results = [
+        path for path in expected_output_files(job.result_dir, job.output_name)
+        if not path.is_file()
+    ]
+    if missing_results:
+        names = ", ".join(path.name for path in missing_results)
+        raise RuntimeError(f"Final output is incomplete: {names}")
+
+    if job.destination_dir.exists():
+        if not job.destination_dir.is_dir():
+            raise RuntimeError(f"Output path is not a directory: {job.destination_dir}")
+        shutil.rmtree(job.destination_dir)
+    job.result_dir.replace(job.destination_dir)
+
+
+def expected_output_files(directory: Path, output_name: str) -> tuple[Path, ...]:
+    return (
+        directory / f"{output_name}.mp3",
+        directory / f"{output_name}_piano.mp3",
+        directory / f"{output_name}.mid",
+        directory / f"{output_name}_quantized.mid",
     )
-    for result in results:
-        shutil.copy2(result, job.destination_dir / result.name)
+
+
+def output_is_complete(output_root: Path, output_name: str) -> bool:
+    destination_dir = output_root / output_name
+    return all(path.is_file() for path in expected_output_files(destination_dir, output_name))
 
 
 def release_separator(separator: object) -> None:
@@ -200,6 +222,51 @@ def release_separator(separator: object) -> None:
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def release_transcriber(transcriber: TranskunTranscriber) -> None:
+    model = getattr(transcriber, "model", None)
+    transcriber.model = None
+    del model
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def process_audio(
+    source: Path,
+    output_name: str,
+    output_dir: Path,
+    work_dir: Path,
+    args: argparse.Namespace,
+) -> None:
+    separator = create_separator(
+        work_dir / "separator",
+        args.model,
+        args.model_dir,
+        output_single_stem="Piano",
+    )
+    try:
+        job = prepare_audio(
+            source,
+            output_name,
+            output_dir,
+            work_dir,
+            separator,
+        )
+    finally:
+        release_separator(separator)
+
+    transcriber = TranskunTranscriber(
+        device=args.device,
+        segment_hop_size=args.segment_hop_size,
+        segment_size=args.segment_size,
+    )
+    try:
+        finish_audio(job, transcriber)
+    finally:
+        release_transcriber(transcriber)
 
 
 def main() -> None:
@@ -220,6 +287,7 @@ def main() -> None:
         raise SystemExit(f"No audio files found in: {input_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
     failures: list[tuple[Path, str]] = []
     named_audio_files: list[tuple[Path, str]] = []
     for source in audio_files:
@@ -238,57 +306,43 @@ def main() -> None:
         else:
             unique_audio_files.append((source, output_name))
 
-    with TemporaryDirectory(prefix="muvisual-batch-") as temporary_dir:
+    processed_count = 0
+    skipped_count = 0
+    with TemporaryDirectory(prefix="muvisual-batch-", dir=TEMP_DIR) as temporary_dir:
         batch_work_dir = Path(temporary_dir)
-        separator = create_separator(
-            batch_work_dir / "separator",
-            args.model,
-            args.model_dir,
-            output_single_stem="Piano",
-        )
-        prepared_jobs: list[PreparedAudio] = []
         for index, (source, output_name) in enumerate(unique_audio_files, start=1):
-            print(f"\n[Separate {index}/{len(unique_audio_files)}] Processing: {source}")
+            destination_dir = output_dir / output_name
+            if output_is_complete(output_dir, output_name):
+                skipped_count += 1
+                print(
+                    f"\n[Skip {index}/{len(unique_audio_files)}] Already completed: "
+                    f"{destination_dir}"
+                )
+                continue
+
+            print(f"\n[Process {index}/{len(unique_audio_files)}] Processing: {source}")
             try:
-                job = prepare_audio(
+                process_audio(
                     source,
                     output_name,
                     output_dir,
                     batch_work_dir / str(index),
-                    separator,
+                    args,
                 )
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 failures.append((source, str(exc)))
                 print(f"Failed: {source}: {exc}", file=sys.stderr)
             else:
-                prepared_jobs.append(job)
-
-        release_separator(separator)
-        del separator
-
-        if prepared_jobs:
-            transcriber = TranskunTranscriber(
-                device=args.device,
-                segment_hop_size=args.segment_hop_size,
-                segment_size=args.segment_size,
-            )
-            for index, job in enumerate(prepared_jobs, start=1):
-                print(
-                    f"\n[Transcribe {index}/{len(prepared_jobs)}] Processing: "
-                    f"{job.source}"
-                )
-                try:
-                    finish_audio(job, transcriber)
-                except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-                    failures.append((job.source, str(exc)))
-                    print(f"Failed: {job.source}: {exc}", file=sys.stderr)
-                else:
-                    print(f"Completed: {job.destination_dir}")
+                processed_count += 1
+                print(f"Completed: {destination_dir}")
 
     if failures:
         details = "\n".join(f"  {source}: {error}" for source, error in failures)
         raise SystemExit(f"\n{len(failures)} of {len(audio_files)} file(s) failed:\n{details}")
-    print(f"\nProcessed {len(audio_files)} file(s) successfully.")
+    print(
+        f"\nProcessed {processed_count} file(s); "
+        f"skipped {skipped_count} completed file(s)."
+    )
 
 
 if __name__ == "__main__":
