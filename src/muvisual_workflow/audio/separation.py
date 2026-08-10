@@ -1,7 +1,7 @@
 """Separate files in data/audio into stems using the BS-Roformer SW model.
 
-Install the dependency first:
-    python -m pip install -U audio-separator[gpu]
+Install project dependencies first:
+    uv sync
 
 The model checkpoint is downloaded/cached by python-audio-separator when a
 known model filename is supplied. Use --model to select the exact BS-Roformer
@@ -18,9 +18,11 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-DEFAULT_INPUT_DIR = Path(__file__).parent / "data" / "audio"
-DEFAULT_OUTPUT_DIR = Path(__file__).parent / "data" / "stem"
-DEFAULT_MODEL_DIR = Path(__file__).parent / "data" / "model" / "BS-Rofo-SW"
+from muvisual_workflow.paths import DATA_DIR
+
+DEFAULT_INPUT_DIR = DATA_DIR / "audio"
+DEFAULT_OUTPUT_DIR = DATA_DIR / "stem"
+DEFAULT_MODEL_DIR = DATA_DIR / "model" / "BS-Rofo-SW"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aiff", ".ac3"}
 
@@ -119,8 +121,7 @@ def create_separator(
     except ModuleNotFoundError as exc:
         if exc.name and exc.name.startswith("audio_separator"):
             raise SystemExit(
-                "Missing dependency: install it with "
-                "python -m pip install -U audio-separator[gpu]"
+                "Missing dependency: run `uv sync` from the project root"
             ) from exc
         raise
 

@@ -1,8 +1,8 @@
 """Apply a configurable noise gate to every WAV in data/stem.
 
 Examples:
-    python gate_stems.py
-    python gate_stems.py --threshold-db -48 --attack-ms 10 --hold-ms 80 --release-ms 150
+    uv run muvisual-gate
+    uv run muvisual-gate --threshold-db -48 --attack-ms 10 --hold-ms 80 --release-ms 150
 
 The gate is driven by short-time RMS level. Quiet sections are attenuated to
 zero; attack, hold, and release are applied to the gain envelope rather than
@@ -17,9 +17,10 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
-ROOT = Path(__file__).parent
-DEFAULT_INPUT = ROOT / "data" / "stem"
-DEFAULT_OUTPUT = ROOT / "data" / "stem_gated"
+from muvisual_workflow.paths import DATA_DIR
+
+DEFAULT_INPUT = DATA_DIR / "stem"
+DEFAULT_OUTPUT = DATA_DIR / "stem_gated"
 DEFAULT_THRESHOLD_DB = -48.0
 DEFAULT_ATTACK_MS = 8.0
 DEFAULT_HOLD_MS = 80.0

@@ -1,7 +1,7 @@
 """Transcribe the separated piano stem to MIDI with Transkun.
 
-Install Transkun first:
-    python -m pip install transkun
+Install project dependencies first:
+    uv sync
 
 The Transkun command downloads/loads its pretrained weights automatically.
 """
@@ -12,9 +12,10 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-PROJECT_DIR = Path(__file__).parent
-DEFAULT_INPUT = PROJECT_DIR / "data" / "stem_gated"
-DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi"
+from muvisual_workflow.paths import DATA_DIR
+
+DEFAULT_INPUT = DATA_DIR / "stem_gated"
+DEFAULT_OUTPUT = DATA_DIR / "midi"
 INSTRUMENTS = ["other"]
 ENABLE_QUANTIZE = True
 
@@ -70,7 +71,7 @@ class TranskunTranscriber:
             from transkun.transcribe import readAudio
         except ImportError as exc:
             raise SystemExit(
-                "Missing Transkun dependency. Install it with: python -m pip install transkun"
+                "Missing Transkun dependency: run `uv sync` from the project root"
             ) from exc
 
         self.device = choose_device(device)
@@ -120,7 +121,7 @@ def midi_quantize(source: Path) -> Path:
     try:
         import mido
     except ImportError as exc:
-        raise SystemExit("Quantization requires: python -m pip install mido") from exc
+        raise SystemExit("Missing Mido dependency: run `uv sync` from the project root") from exc
 
     midi = mido.MidiFile(source)
     c4_note = 60

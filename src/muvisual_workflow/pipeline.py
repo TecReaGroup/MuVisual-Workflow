@@ -13,19 +13,19 @@ from tempfile import TemporaryDirectory
 
 import mutagen
 
-from separate_audio import (
+from muvisual_workflow.audio.separation import (
     AUDIO_EXTENSIONS,
     DEFAULT_MODEL,
     DEFAULT_MODEL_DIR,
     create_separator,
     separate_with_loaded_model,
 )
-from transcribe_piano import TranskunTranscriber, midi_quantize
+from muvisual_workflow.paths import DATA_DIR, PROJECT_ROOT
+from muvisual_workflow.audio.transcription import TranskunTranscriber, midi_quantize
 
-ROOT = Path(__file__).parent
-DEFAULT_INPUT = ROOT / "data" / "input"
-DEFAULT_OUTPUT = ROOT / "data" / "output"
-TEMP_DIR = ROOT / "temp"
+DEFAULT_INPUT = DATA_DIR / "input"
+DEFAULT_OUTPUT = DATA_DIR / "output"
+TEMP_DIR = PROJECT_ROOT / "temp"
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -52,8 +52,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_script(script: str, *arguments: object) -> None:
-    command = [sys.executable, str(ROOT / script), *(str(argument) for argument in arguments)]
+def run_module(module: str, *arguments: object) -> None:
+    command = [
+        sys.executable,
+        "-m",
+        f"muvisual_workflow.{module}",
+        *(str(argument) for argument in arguments),
+    ]
     subprocess.run(command, check=True)
 
 
@@ -148,7 +153,7 @@ def prepare_audio(
     piano_stem = find_piano_stem(stem_dir)
     piano_stem_dir.mkdir()
     shutil.copy2(piano_stem, piano_stem_dir / piano_stem.name)
-    run_script("gate_stems.py", "--input", piano_stem_dir, "--output", gated_dir)
+    run_module("audio.noise_gate", "--input", piano_stem_dir, "--output", gated_dir)
     gated_piano = gated_dir / piano_stem.name
     if not gated_piano.is_file():
         raise RuntimeError(f"Gated piano stem was not created: {gated_piano}")
@@ -175,7 +180,7 @@ def finish_audio(job: PreparedAudio, transcriber: TranskunTranscriber) -> None:
     if not midi_path.is_file() or not quantized_path.is_file():
         raise RuntimeError("Transcription did not create both MIDI files")
 
-    run_script("fix_midi.py", "--input", job.midi_dir, "--output", job.fixed_dir)
+    run_module("midi.normalizer", "--input", job.midi_dir, "--output", job.fixed_dir)
     fixed_midi = job.fixed_dir / midi_path.name
     fixed_quantized = job.fixed_dir / quantized_path.name
     if not fixed_midi.is_file() or not fixed_quantized.is_file():

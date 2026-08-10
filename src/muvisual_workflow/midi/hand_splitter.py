@@ -1,9 +1,9 @@
-"""Separate piano MIDI into two staff/hand channels with Piano_SVSep.
+"""Assign piano MIDI notes to left- and right-hand channels with Piano_SVSep.
 
 Install the model repository and its dependencies first:
     git clone https://github.com/CPJKU/piano_svsep.git
     cd piano_svsep
-    pip install .
+    uv pip install .
 
 Set PIANO_SVSEP_ROOT below if the repository is stored elsewhere. The
 pretrained model is expected at pretrained_models/model.ckpt.
@@ -20,11 +20,12 @@ from pathlib import Path
 
 import mido
 
-PROJECT_DIR = Path(__file__).parent
-DEFAULT_INPUT = PROJECT_DIR / "data" / "midi_fixed"
-DEFAULT_OUTPUT = PROJECT_DIR / "data" / "midi_hand_split"
+from muvisual_workflow.paths import DATA_DIR, PROJECT_ROOT
+
+DEFAULT_INPUT = DATA_DIR / "midi_fixed"
+DEFAULT_OUTPUT = DATA_DIR / "midi_hand_split"
 PIANO_SVSEP_ROOT = Path(
-    os.environ.get("PIANO_SVSEP_ROOT", str(PROJECT_DIR / "piano_svsep"))
+    os.environ.get("PIANO_SVSEP_ROOT", str(PROJECT_ROOT / "piano_svsep"))
 )
 MODEL_PATH = PIANO_SVSEP_ROOT / "pretrained_models" / "model.ckpt"
 DEBUG = True
@@ -73,7 +74,7 @@ def predict_staff(source: Path, mid: mido.MidiFile, repo_root: Path, model: Path
         import partitura as pt
     except ImportError as exc:
         raise SystemExit(
-            "Missing Partitura. Install Piano_SVSep with: pip install ."
+            "Missing Partitura. Install Piano_SVSep with: uv pip install ."
         ) from exc
 
     predict_script = repo_root / "launch_scripts" / "predict.py"

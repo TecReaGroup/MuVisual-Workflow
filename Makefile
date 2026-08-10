@@ -1,24 +1,22 @@
+UV ?= uv
+
 install:
-	$(conda) create -n muvisual python=3.12 -y
-	$(conda) activate muvisual
-	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install torch torchvision torchaudio --index-url <https://download.pytorch.org/whl/cu130>
-	$(PYTHON) -m pip install -r requirements.txt
+	$(UV) sync
 
 separate:
-	$(PYTHON) separate_audio.py
+	$(UV) run muvisual-separate
 
 gate:
-	$(PYTHON) gate_stems.py
+	$(UV) run muvisual-gate
 
 transcribe:
-	$(PYTHON) transcribe_piano.py
+	$(UV) run muvisual-transcribe
 
 fix-midi:
-	$(PYTHON) fix_midi.py
+	$(UV) run muvisual-fix-midi
 
 split-midi:
-	$(PYTHON) split_midi_voices.py
+	$(UV) run muvisual-split-midi
 
 full: separate gate transcribe fix-midi
 

@@ -1,0 +1,41 @@
+[project]
+name = "muvisual-workflow"
+version = "0.1.0"
+description = "Audio separation and piano transcription workflow for MuVisual"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "audio-separator[gpu]",
+    "mido",
+    "moduleconf",
+    "mutagen",
+    "numpy",
+    "partitura",
+    "scipy",
+    "soxr",
+    "torch",
+    "transkun",
+]
+
+[project.scripts]
+muvisual = "muvisual_workflow.pipeline:main"
+muvisual-fix-midi = "muvisual_workflow.midi.normalizer:main"
+muvisual-gate = "muvisual_workflow.audio.noise_gate:main"
+muvisual-separate = "muvisual_workflow.audio.separation:main"
+muvisual-split-midi = "muvisual_workflow.midi.hand_splitter:main"
+muvisual-transcribe = "muvisual_workflow.audio.transcription:main"
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+
+[tool.uv]
+constraint-dependencies = ["numba>=0.59.1"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

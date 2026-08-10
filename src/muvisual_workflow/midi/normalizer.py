@@ -1,7 +1,7 @@
 """Analyze and gently normalize MIDI files.
 
-Dependencies:
-    python -m pip install mido
+Install project dependencies first:
+    uv sync
 
 For each MIDI file this script reports an estimated key and BPM, removes tempo
 changes, writes one global tempo event, and applies one uniform time shift to
@@ -21,10 +21,10 @@ try:
 except ImportError:
     mido = None  # type: ignore[assignment]
 
+from muvisual_workflow.paths import DATA_DIR
 
-ROOT = Path(__file__).parent
-DEFAULT_INPUT = ROOT / "data" / "midi"
-DEFAULT_OUTPUT = ROOT / "data" / "midi_fixed"
+DEFAULT_INPUT = DATA_DIR / "midi"
+DEFAULT_OUTPUT = DATA_DIR / "midi_fixed"
 ALIGNMENT_SAMPLE_COUNT = 35
 
 MAJOR_PROFILE = (6.35, 2.18, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
@@ -296,7 +296,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     if mido is None:
-        raise SystemExit("Missing dependency. Install with: python -m pip install mido")
+        raise SystemExit("Missing dependency: run `uv sync` from the project root")
     files = sorted(args.input.glob("*.mid")) + sorted(args.input.glob("*.midi"))
     if not files:
         raise SystemExit(f"No MIDI files found in {args.input.resolve()}")
