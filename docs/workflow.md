@@ -9,7 +9,7 @@
 
 ## File
 
-```txts
+```txt
 data/output/
 └── 歌名_专辑名/
     ├── 歌名_专辑名.mp3
