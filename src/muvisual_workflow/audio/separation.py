@@ -1,4 +1,4 @@
-"""Separate files in data/audio into stems using the BS-Roformer SW model.
+"""Separate files in data/develop/audio into stems using the BS-Roformer SW model.
 
 Install project dependencies first:
     uv sync
@@ -18,11 +18,10 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-from muvisual_workflow.paths import DATA_DIR
+from muvisual_workflow.paths import DEVELOP_DATA_DIR
 
-DEFAULT_INPUT_DIR = DATA_DIR / "audio"
-DEFAULT_OUTPUT_DIR = DATA_DIR / "stem"
-DEFAULT_MODEL_DIR = DATA_DIR / "model" / "BS-Rofo-SW"
+DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
+DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aiff", ".ac3"}
 
@@ -95,27 +94,14 @@ def parse_args() -> argparse.Namespace:
                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help=f"BS-Roformer SW checkpoint filename (default: {DEFAULT_MODEL})")
-    parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR,
-                        help=f"Directory containing the model checkpoint (default: {DEFAULT_MODEL_DIR})")
     return parser.parse_args()
 
 
 def create_separator(
     output_dir: Path,
     model: str,
-    model_dir: Path | None,
     output_single_stem: str | None = None,
 ) -> Any:
-    if model_dir is not None and not model_dir.is_dir():
-        raise SystemExit(f"Model directory does not exist: {model_dir}")
-    if model_dir is not None and not (model_dir / model).is_file():
-        available = sorted(path.name for path in model_dir.glob("*.ckpt"))
-        detail = f" Available checkpoints: {', '.join(available)}" if available else ""
-        raise SystemExit(
-            f"Model checkpoint does not exist: {model_dir / model}.{detail} "
-            "Rename the local checkpoint to the supported filename or pass --model with that filename."
-        )
-
     try:
         from audio_separator.separator import Separator
     except ModuleNotFoundError as exc:
@@ -131,11 +117,9 @@ def create_separator(
         "output_format": "WAV",
         "output_single_stem": output_single_stem,
     }
-    if model_dir is not None:
-        separator_kwargs["model_file_dir"] = str(model_dir)
 
     separator = Separator(**separator_kwargs)
-    print(f"Loading model: {model}")
+    print(f"Loading model from audio-separator registry: {model}")
     separator.load_model(model_filename=model)
     model_instance = separator.model_instance
     if output_single_stem is not None and hasattr(model_instance, "process_all_stems"):
@@ -183,8 +167,7 @@ def main() -> None:
     if input_path.is_dir() and not any(input_path.rglob("*")):
         raise SystemExit(f"Input directory is empty: {input_path}")
 
-    model_dir = args.model_dir.expanduser().resolve() if args.model_dir else None
-    separator = create_separator(output_dir, args.model, model_dir)
+    separator = create_separator(output_dir, args.model)
     output_files = separate_with_loaded_model(separator, input_path, output_dir)
     print(f"Done. Generated {len(output_files)} stem file(s):")
     for output_file in output_files:

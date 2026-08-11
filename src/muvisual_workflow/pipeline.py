@@ -16,7 +16,6 @@ import mutagen
 from muvisual_workflow.audio.separation import (
     AUDIO_EXTENSIONS,
     DEFAULT_MODEL,
-    DEFAULT_MODEL_DIR,
     create_separator,
     separate_with_loaded_model,
 )
@@ -45,7 +44,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
@@ -249,7 +247,6 @@ def process_audio(
     separator = create_separator(
         work_dir / "separator",
         args.model,
-        args.model_dir,
         output_single_stem="Piano",
     )
     try:
@@ -278,7 +275,6 @@ def main() -> None:
     args = parse_args()
     input_dir = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
-    args.model_dir = args.model_dir.expanduser().resolve()
 
     if not input_dir.is_dir():
         raise SystemExit(f"Input directory does not exist: {input_dir}")

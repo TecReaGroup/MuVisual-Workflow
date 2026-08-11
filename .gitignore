@@ -32,18 +32,18 @@ Thumbs.db
 !data/**/.gitkeep
 
 # Large local audio/model assets and generated outputs
-data/audio/*
-!data/audio/.gitkeep
-data/model/*
-!data/model/.gitkeep
-data/stem/*
-!data/stem/.gitkeep
-data/stem_gated/*
-!data/stem_gated/.gitkeep
-data/midi/*
-!data/midi/.gitkeep
-data/midi_fixed/*
-!data/midi_fixed/.gitkeep
+data/develop/audio/*
+!data/develop/audio/.gitkeep
+data/develop/model/*
+!data/develop/model/.gitkeep
+data/develop/stem/*
+!data/develop/stem/.gitkeep
+data/develop/stem_gated/*
+!data/develop/stem_gated/.gitkeep
+data/develop/midi/*
+!data/develop/midi/.gitkeep
+data/develop/midi_fixed/*
+!data/develop/midi_fixed/.gitkeep
 
 *.mid
 *.mp3

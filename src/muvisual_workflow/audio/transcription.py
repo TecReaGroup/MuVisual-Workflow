@@ -12,10 +12,10 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from muvisual_workflow.paths import DATA_DIR
+from muvisual_workflow.paths import DEVELOP_DATA_DIR
 
-DEFAULT_INPUT = DATA_DIR / "stem_gated"
-DEFAULT_OUTPUT = DATA_DIR / "midi"
+DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
+DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
 INSTRUMENTS = ["other"]
 ENABLE_QUANTIZE = True
 

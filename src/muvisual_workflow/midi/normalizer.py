@@ -21,10 +21,10 @@ try:
 except ImportError:
     mido = None  # type: ignore[assignment]
 
-from muvisual_workflow.paths import DATA_DIR
+from muvisual_workflow.paths import DEVELOP_DATA_DIR
 
-DEFAULT_INPUT = DATA_DIR / "midi"
-DEFAULT_OUTPUT = DATA_DIR / "midi_fixed"
+DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi"
+DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_fixed"
 ALIGNMENT_SAMPLE_COUNT = 35
 
 MAJOR_PROFILE = (6.35, 2.18, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)

@@ -8,3 +8,4 @@ PROJECT_ROOT = Path(
     os.environ.get("MUVISUAL_PROJECT_ROOT", Path.cwd())
 ).expanduser().resolve()
 DATA_DIR = PROJECT_ROOT / "data"
+DEVELOP_DATA_DIR = DATA_DIR / "develop"

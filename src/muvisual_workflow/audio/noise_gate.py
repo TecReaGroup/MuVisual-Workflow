@@ -1,4 +1,4 @@
-"""Apply a configurable noise gate to every WAV in data/stem.
+"""Apply a configurable noise gate to every WAV in data/develop/stem.
 
 Examples:
     uv run muvisual-gate
@@ -17,10 +17,10 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
-from muvisual_workflow.paths import DATA_DIR
+from muvisual_workflow.paths import DEVELOP_DATA_DIR
 
-DEFAULT_INPUT = DATA_DIR / "stem"
-DEFAULT_OUTPUT = DATA_DIR / "stem_gated"
+DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem"
+DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_THRESHOLD_DB = -48.0
 DEFAULT_ATTACK_MS = 8.0
 DEFAULT_HOLD_MS = 80.0
