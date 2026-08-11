@@ -3,10 +3,11 @@ UV ?= uv
 install:
 	$(UV) sync
 
-# Full pipeline: read metadata, convert MP3, separate the piano stem, apply the
-# noise gate, transcribe and quantize MIDI, normalize MIDI, then write results.
+# Full pipeline: read audio tags, copy the original, detect beats once, and
+# separate all stems. Store every stem as MP3, gate/transcribe only configured
+# instruments, then normalize every generated MIDI file.
 main:
-	$(UV) run python -m muvisual_workflow.pipeline
+	$(UV) run python -m muvisual_workflow.workflow.pipeline
 
 separate:
 	$(UV) run muvisual-separate
@@ -16,9 +17,6 @@ gate:
 
 transcribe:
 	$(UV) run muvisual-transcribe
-
-muscriptor:
-	$(UV) run muvisual-muscriptor
 
 beats:
 	$(UV) run muvisual-beats

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
-from muvisual_workflow.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "stem_gated"
@@ -99,6 +99,32 @@ def gate_audio(
     return audio * (sample_gain[:, None] if audio.ndim == 2 else sample_gain)
 
 
+def gate_file(
+    source: Path,
+    destination: Path,
+    threshold_db: float = DEFAULT_THRESHOLD_DB,
+    attack_ms: float = DEFAULT_ATTACK_MS,
+    hold_ms: float = DEFAULT_HOLD_MS,
+    release_ms: float = DEFAULT_RELEASE_MS,
+    analysis_ms: float = DEFAULT_ANALYSIS_MS,
+) -> Path:
+    """Apply the noise gate to one WAV file."""
+    sample_rate, raw = wavfile.read(source)
+    audio, peak = to_float32(raw)
+    gated = gate_audio(
+        audio,
+        sample_rate,
+        threshold_db,
+        attack_ms,
+        hold_ms,
+        release_ms,
+        analysis_ms,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    wavfile.write(destination, sample_rate, restore_dtype(gated, raw.dtype, peak))
+    return destination
+
+
 def main() -> None:
     args = parse_args()
     if args.attack_ms < 0 or args.hold_ms < 0 or args.release_ms <= 0 or args.analysis_ms <= 0:
@@ -108,14 +134,15 @@ def main() -> None:
         raise SystemExit(f"No WAV files found in {args.input.resolve()}")
     args.output.mkdir(parents=True, exist_ok=True)
     for source in files:
-        sample_rate, raw = wavfile.read(source)
-        audio, peak = to_float32(raw)
-        gated = gate_audio(
-            audio, sample_rate, args.threshold_db, args.attack_ms,
-            args.hold_ms, args.release_ms, args.analysis_ms,
+        destination = gate_file(
+            source,
+            args.output / source.name,
+            args.threshold_db,
+            args.attack_ms,
+            args.hold_ms,
+            args.release_ms,
+            args.analysis_ms,
         )
-        destination = args.output / source.name
-        wavfile.write(destination, sample_rate, restore_dtype(gated, raw.dtype, peak))
         print(f"{source.name} -> {destination}")
 
 

@@ -14,8 +14,9 @@ from pathlib import Path
 import re
 from typing import Protocol
 
-from muvisual_workflow.config import InstrumentAudioToMidiConfig, load_config
-from muvisual_workflow.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.config import InstrumentAudioToMidiConfig, load_config
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.midi.quantization import quantize_midi
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
@@ -62,7 +63,7 @@ def parse_args() -> argparse.Namespace:
 def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMidiModel:
     """Construct the selected model implementation for this workflow step."""
     if config.model == "muscriptor":
-        from muvisual_workflow.audio.muscriptor import MuscriptorModel
+        from muvisual_workflow.audio.audio_to_midi.muscriptor import MuscriptorModel
 
         return MuscriptorModel(
             model_name=config.checkpoint,
@@ -70,7 +71,7 @@ def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMi
             dtype=config.dtype,
             instruments=config.target_instruments,
         )
-    from muvisual_workflow.audio.transkun import TranskunModel
+    from muvisual_workflow.audio.audio_to_midi.transkun import TranskunModel
 
     return TranskunModel(
         checkpoint=config.checkpoint,
@@ -80,159 +81,10 @@ def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMi
     )
 
 
-def midi_quantize(source: Path) -> Path:
-    try:
-        import mido
-    except ImportError as exc:
-        raise SystemExit("Missing Mido dependency: run `uv sync` from the project root") from exc
-
-    midi = mido.MidiFile(source)
-    c4_note = 60
-    time_threshold = 100
-
-    for track in midi.tracks:
-        if not any(message.type in {"note_on", "note_off"} for message in track):
-            continue
-
-        notes_on = []
-        notes_off = []
-        other_events = []
-        current_time = 0
-        for message in track:
-            current_time += message.time
-            if message.type == "note_on" and message.velocity > 0:
-                notes_on.append({
-                    "time": current_time,
-                    "note": message.note,
-                    "velocity": message.velocity,
-                    "channel": message.channel,
-                })
-            elif message.type == "note_off" or (
-                message.type == "note_on" and message.velocity == 0
-            ):
-                notes_off.append({
-                    "time": current_time,
-                    "note": message.note,
-                    "velocity": message.velocity if message.type == "note_off" else 0,
-                    "channel": message.channel,
-                })
-            else:
-                other_events.append({"time": current_time, "msg": message})
-
-        def process_hand_notes(hand_notes: list[dict]) -> None:
-            hand_notes.sort(key=lambda note: note["time"])
-            index = 0
-            while index < len(hand_notes):
-                current = hand_notes[index]["time"]
-                simultaneous = [hand_notes[index]]
-                next_index = index + 1
-                while (
-                    next_index < len(hand_notes)
-                    and hand_notes[next_index]["time"] - current <= time_threshold
-                ):
-                    simultaneous.append(hand_notes[next_index])
-                    next_index += 1
-
-                if next_index < len(hand_notes):
-                    next_time = hand_notes[next_index]["time"]
-                    for note in simultaneous:
-                        best_off = None
-                        best_distance = float("inf")
-                        for off in notes_off:
-                            if (
-                                off["note"] == note["note"]
-                                and off["channel"] == note["channel"]
-                                and off["time"] > note["time"]
-                                and not off.get("processed", False)
-                            ):
-                                distance = off["time"] - note["time"]
-                                if distance < best_distance:
-                                    best_distance = distance
-                                    best_off = off
-                        if best_off is not None:
-                            best_off["time"] = max(note["time"] + 100, next_time - 10)
-                            best_off["processed"] = True
-                index = next_index
-
-        process_hand_notes([note for note in notes_on if note["note"] <= c4_note])
-        process_hand_notes([note for note in notes_on if note["note"] > c4_note])
-
-        all_events = (
-            [("note_on", note["time"], note) for note in notes_on]
-            + [("note_off", note["time"], note) for note in notes_off]
-            + [("other", event["time"], event) for event in other_events]
-        )
-        all_events.sort(key=lambda event: event[1])
-
-        rebuilt = mido.MidiTrack()
-        last_time = 0
-        for event_type, event_time, event_data in all_events:
-            delta = event_time - last_time
-            if event_type == "note_on":
-                message = mido.Message(
-                    "note_on",
-                    channel=event_data["channel"],
-                    note=event_data["note"],
-                    velocity=event_data["velocity"],
-                    time=delta,
-                )
-            elif event_type == "note_off":
-                message = mido.Message(
-                    "note_off",
-                    channel=event_data["channel"],
-                    note=event_data["note"],
-                    velocity=event_data["velocity"],
-                    time=delta,
-                )
-            else:
-                message = event_data["msg"].copy(time=delta)
-            rebuilt.append(message)
-            last_time = event_time
-        track.clear()
-        track.extend(rebuilt)
-
-    output = source.with_name(f"{source.stem}_quantized{source.suffix}")
-    midi.save(output)
-    return output
-
-
-def trim_midi_silence(midi) -> None:
-    first_note_time = float("inf")
-    last_note_time = 0
-    for track in midi.tracks:
-        current_time = 0
-        has_note = False
-        for message in track:
-            current_time += message.time
-            if message.type == "note_on" and message.velocity > 0:
-                first_note_time = min(first_note_time, current_time)
-                last_note_time = max(last_note_time, current_time)
-                has_note = True
-    if first_note_time == float("inf"):
-        return
-
-    for track in midi.tracks:
-        current_time = 0
-        kept = []
-        for message in track:
-            current_time += message.time
-            if (
-                first_note_time <= current_time <= last_note_time + 1000
-                or message.type in {"set_tempo", "key_signature", "time_signature"}
-                or current_time < first_note_time
-            ):
-                kept.append((max(0, current_time - first_note_time), message))
-        track.clear()
-        previous = 0
-        for absolute_time, message in kept:
-            track.append(message.copy(time=absolute_time - previous))
-            previous = absolute_time
-
-
 @dataclass(frozen=True)
 class AudioToMidiResult:
     midi_path: Path
-    quantized_path: Path | None
+    quantized: bool
 
 
 class AudioToMidiStep:
@@ -254,11 +106,13 @@ class AudioToMidiStep:
         if not output_path.is_file():
             raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
 
-        quantized_path = midi_quantize(output_path) if self.config.quantize else None
+        quantized = self.config.model == "transkun"
+        if quantized:
+            quantize_midi(output_path, output_path)
         print(f"Wrote: {output_path}")
-        if quantized_path is not None:
-            print(f"Quantized copy: {quantized_path}")
-        return AudioToMidiResult(output_path, quantized_path)
+        if quantized:
+            print(f"Quantized in place: {output_path}")
+        return AudioToMidiResult(output_path, quantized)
 
     def release(self) -> None:
         """Release the loaded implementation model."""

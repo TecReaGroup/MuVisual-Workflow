@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
 
-from muvisual_workflow.paths import PROJECT_ROOT
+from muvisual_workflow.core.paths import PROJECT_ROOT
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "muvisual.toml"
 
@@ -19,7 +19,6 @@ class InstrumentAudioToMidiConfig:
     device: str
     dtype: str | None
     target_instruments: tuple[str, ...]
-    quantize: bool
     segment_hop_size: int | None = None
     segment_size: int | None = None
 
@@ -32,7 +31,6 @@ def _default_instrument_configs() -> dict[str, InstrumentAudioToMidiConfig]:
         device="auto",
         dtype=None,
         target_instruments=("acoustic_piano",),
-        quantize=True,
     )
     return {"piano": piano}
 
@@ -149,10 +147,6 @@ def _instrument_config(
             payload.get("target_instruments", [name]),
             f"{prefix}.target_instruments",
         ),
-        quantize=_boolean(
-            payload.get("quantize", defaults["quantize"]),
-            f"{prefix}.quantize",
-        ),
         segment_hop_size=_optional_positive_int(
             payload.get("segment_hop_size", defaults["segment_hop_size"]),
             f"{prefix}.segment_hop_size",
@@ -181,7 +175,6 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
     defaults: dict[str, object] = {
         "device": _device(audio_to_midi.get("device", "auto"), "audio_to_midi.device"),
         "dtype": audio_to_midi.get("dtype"),
-        "quantize": _boolean(audio_to_midi.get("quantize", True), "audio_to_midi.quantize"),
         "segment_hop_size": audio_to_midi.get("segment_hop_size"),
         "segment_size": audio_to_midi.get("segment_size"),
     }
@@ -195,9 +188,7 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
             raise ValueError(f"audio_to_midi.instruments.{raw_name} must be a table")
         name = raw_name.casefold()
         instruments[name] = _instrument_config(name, value, defaults)
-    if not instruments:
-        instruments = _default_instrument_configs()
-    if default_instrument not in instruments:
+    if instruments and default_instrument not in instruments:
         available = ", ".join(sorted(instruments))
         raise ValueError(
             f"audio_to_midi.default_instrument {default_instrument!r} is not configured; "

@@ -21,7 +21,7 @@ try:
 except ImportError:
     mido = None  # type: ignore[assignment]
 
-from muvisual_workflow.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_fixed"

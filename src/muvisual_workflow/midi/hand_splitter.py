@@ -20,7 +20,7 @@ from pathlib import Path
 
 import mido
 
-from muvisual_workflow.paths import DATA_DIR, DEVELOP_DATA_DIR, PROJECT_ROOT
+from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR, PROJECT_ROOT
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
 DEFAULT_OUTPUT = DATA_DIR / "midi_hand_split"

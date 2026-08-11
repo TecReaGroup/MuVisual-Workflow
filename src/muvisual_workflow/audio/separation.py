@@ -18,7 +18,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-from muvisual_workflow.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"

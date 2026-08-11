@@ -5,7 +5,6 @@ model = "BS-Roformer-SW.ckpt"
 default_instrument = "piano"
 device = "auto"
 dtype = "auto"
-quantize = true
 
 [audio_to_midi.instruments.piano]
 model = "muscriptor"

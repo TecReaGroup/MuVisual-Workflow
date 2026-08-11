@@ -11,8 +11,8 @@ import sys
 import tempfile
 from typing import Any
 
-from muvisual_workflow.config import load_config
-from muvisual_workflow.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
+from muvisual_workflow.core.config import load_config
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
 
 SUPPORTED_EXTENSIONS = frozenset({".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma"})
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "audio"
@@ -97,12 +97,19 @@ class BeatDetector:
             raise RuntimeError("Beat This is not installed; run `uv sync`") from exc
 
         self.device, float16 = _select_device(torch, device)
-        self.detector = File2Beats(
-            checkpoint_path=model_name,
-            device=self.device,
-            float16=float16,
-            dbn=dbn,
-        )
+        try:
+            self.detector = File2Beats(
+                checkpoint_path=model_name,
+                device=self.device,
+                float16=float16,
+                dbn=dbn,
+            )
+        except ImportError as exc:
+            if dbn:
+                raise RuntimeError(
+                    "Beat This DBN post-processing requires the madmom dependency"
+                ) from exc
+            raise
 
     def detect(self, audio_path: Path) -> tuple[Any, Any]:
         try:
@@ -116,14 +123,22 @@ class BeatDetector:
         finally:
             decoded_path.unlink(missing_ok=True)
 
+    def release(self) -> None:
+        self.detector = None
 
-def write_result(detector: BeatDetector, source: Path, destination: Path) -> None:
+
+def write_result(
+    detector: BeatDetector,
+    source: Path,
+    destination: Path,
+    audio_reference: str | None = None,
+) -> None:
     beats, downbeats = detector.detect(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(
             {
-                "audio": str(source),
+                "audio": audio_reference or str(source),
                 "beats": [float(value) for value in beats],
                 "downbeats": [float(value) for value in downbeats],
             },

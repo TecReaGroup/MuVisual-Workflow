@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "audio-separator[gpu]",
     "beat-this>=1.1.0",
+    "madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae",
     "mido",
     "moduleconf",
     "muscriptor>=0.3.0",
@@ -21,11 +22,10 @@ dependencies = [
 ]
 
 [project.scripts]
-muvisual = "muvisual_workflow.pipeline:main"
+muvisual = "muvisual_workflow.workflow.pipeline:main"
 muvisual-fix-midi = "muvisual_workflow.midi.normalizer:main"
 muvisual-gate = "muvisual_workflow.audio.noise_gate:main"
 muvisual-beats = "muvisual_workflow.audio.beat_detection:main"
-muvisual-muscriptor = "muvisual_workflow.audio.muscriptor:main"
 muvisual-separate = "muvisual_workflow.audio.separation:main"
 muvisual-split-midi = "muvisual_workflow.midi.hand_splitter:main"
 muvisual-transcribe = "muvisual_workflow.audio.audio_to_midi:main"

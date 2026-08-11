@@ -676,6 +676,16 @@ wheels = [
 ]
 
 [[package]]
+name = "madmom"
+version = "0.17.dev0"
+source = { git = "https://github.com/CPJKU/madmom.git?rev=27f032e8947204902c675e5e341a3faf5dc86dae#27f032e8947204902c675e5e341a3faf5dc86dae" }
+dependencies = [
+    { name = "mido", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "scipy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[package]]
 name = "markdown"
 version = "3.10.3"
 source = { registry = "https://pypi.org/simple" }
@@ -875,6 +885,7 @@ source = { editable = "." }
 dependencies = [
     { name = "audio-separator", extra = ["gpu"], marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "beat-this", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "madmom", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "mido", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "moduleconf", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "muscriptor", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -892,6 +903,7 @@ dependencies = [
 requires-dist = [
     { name = "audio-separator", extras = ["gpu"] },
     { name = "beat-this", specifier = ">=1.1.0" },
+    { name = "madmom", git = "https://github.com/CPJKU/madmom.git?rev=27f032e8947204902c675e5e341a3faf5dc86dae" },
     { name = "mido" },
     { name = "moduleconf" },
     { name = "muscriptor", specifier = ">=0.3.0" },
