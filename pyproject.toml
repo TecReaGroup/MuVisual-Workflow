@@ -7,7 +7,9 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "audio-separator[gpu]",
     "beat-this>=1.1.0",
+    "fastapi",
     "madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae",
+    "modal",
     "mido",
     "moduleconf",
     "muscriptor>=0.3.0",

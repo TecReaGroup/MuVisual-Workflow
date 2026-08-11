@@ -3,6 +3,15 @@ UV ?= uv
 install:
 	$(UV) sync
 
+modal-setup:
+	$(UV) run modal setup
+
+modal-deploy:
+	$(UV) run modal deploy -m muvisual_workflow.modal_app
+
+modal:
+	$(UV) run modal run -m muvisual_workflow.modal_app
+
 # Full pipeline: read audio tags, copy the original, detect beats once, and
 # separate all stems. Store every stem as MP3, gate/transcribe only configured
 # instruments, then normalize every generated MIDI file.
