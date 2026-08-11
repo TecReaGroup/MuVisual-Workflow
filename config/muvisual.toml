@@ -1,0 +1,42 @@
+[separation]
+model = "BS-Roformer-SW.ckpt"
+
+[audio_to_midi]
+default_instrument = "piano"
+device = "auto"
+dtype = "auto"
+quantize = true
+
+[audio_to_midi.instruments.piano]
+model = "muscriptor"
+checkpoint = "large"
+target_instruments = ["acoustic_piano"]
+
+[audio_to_midi.instruments.other]
+model = "muscriptor"
+checkpoint = "large"
+target_instruments = ["string_ensemble"]
+
+# [audio_to_midi.instruments.guitar]
+# model = "muscriptor"
+# checkpoint = "medium"
+# target_instruments = ["acoustic_guitar"]
+
+# [audio_to_midi.instruments.bass]
+# model = "muscriptor"
+# checkpoint = "medium"
+# target_instruments = ["electric_bass"]
+
+# [audio_to_midi.instruments.drums]
+# model = "muscriptor"
+# checkpoint = "large"
+# target_instruments = ["drums"]
+
+# To use Transkun, set model = "transkun" and checkpoint = "2.0".
+# Optional Transkun fields are segment_hop_size and segment_size.
+
+[beat_detection]
+enabled = true
+model = "final0"
+device = "auto"
+dbn = true

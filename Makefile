@@ -17,6 +17,12 @@ gate:
 transcribe:
 	$(UV) run muvisual-transcribe
 
+muscriptor:
+	$(UV) run muvisual-muscriptor
+
+beats:
+	$(UV) run muvisual-beats
+
 fix-midi:
 	$(UV) run muvisual-fix-midi
 

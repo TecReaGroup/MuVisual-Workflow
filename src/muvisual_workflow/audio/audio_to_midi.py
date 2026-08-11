@@ -1,27 +1,36 @@
-"""Transcribe the separated piano stem to MIDI with Transkun.
+"""Run the configurable audio-to-MIDI workflow step.
 
 Install project dependencies first:
     uv sync
 
-The Transkun command downloads/loads its pretrained weights automatically.
+MuScriptor and Transkun are selectable model implementations.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+import re
+from typing import Protocol
 
+from muvisual_workflow.config import InstrumentAudioToMidiConfig, load_config
 from muvisual_workflow.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
-INSTRUMENTS = ["other"]
-ENABLE_QUANTIZE = True
+INSTRUMENT_LABEL = re.compile(r"(?:^|[_\s-])\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
+
+
+class AudioToMidiModel(Protocol):
+    device: str
+    model: object
+
+    def transcribe(self, input_path: Path, output_path: Path) -> None: ...
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Transcribe a piano stem to MIDI with Transkun.")
+    parser = argparse.ArgumentParser(description="Transcribe a piano stem to MIDI.")
     parser.add_argument(
         "--input",
         type=Path,
@@ -37,84 +46,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         choices=("auto", "cuda", "cpu"),
-        default="auto",
-        help="Inference device (default: auto; uses CUDA when PyTorch reports it available)",
+        default=None,
+        help="Override the configured inference device",
     )
+    parser.add_argument("--model", choices=("muscriptor", "transkun"), default=None)
+    parser.add_argument("--instrument", default=None, help="Override the instrument name")
+    parser.add_argument("--checkpoint", default=None, help="Override the model checkpoint")
+    parser.add_argument("--dtype", choices=("auto", "float16", "float32", "bfloat16"), default=None)
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--segment-hop-size", type=int, default=None, help="Optional Transkun segmentHopSize")
     parser.add_argument("--segment-size", type=int, default=None, help="Optional Transkun segmentSize")
     return parser.parse_args()
 
 
-def choose_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    try:
-        import torch
+def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMidiModel:
+    """Construct the selected model implementation for this workflow step."""
+    if config.model == "muscriptor":
+        from muvisual_workflow.audio.muscriptor import MuscriptorModel
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    except ImportError:
-        return "cpu"
+        return MuscriptorModel(
+            model_name=config.checkpoint,
+            device=config.device,
+            dtype=config.dtype,
+            instruments=config.target_instruments,
+        )
+    from muvisual_workflow.audio.transkun import TranskunModel
 
-
-class TranskunTranscriber:
-    def __init__(
-        self,
-        device: str = "auto",
-        segment_hop_size: int | None = None,
-        segment_size: int | None = None,
-    ) -> None:
-        try:
-            import moduleconf
-            import torch
-            import transkun
-            from transkun.Data import writeMidi
-            from transkun.transcribe import readAudio
-        except ImportError as exc:
-            raise SystemExit(
-                "Missing Transkun dependency: run `uv sync` from the project root"
-            ) from exc
-
-        self.device = choose_device(device)
-        self.segment_hop_size = segment_hop_size
-        self.segment_size = segment_size
-        self.torch = torch
-        self.read_audio = readAudio
-        self.write_midi = writeMidi
-
-        package_dir = Path(transkun.__file__).resolve().parent
-        config_path = package_dir / "pretrained" / "2.0.conf"
-        weight_path = package_dir / "pretrained" / "2.0.pt"
-        config_manager = moduleconf.parseFromFile(str(config_path))
-        model_class = config_manager["Model"].module.TransKun
-        model_config = config_manager["Model"].config
-        checkpoint: dict[str, Any] = torch.load(weight_path, map_location=self.device)
-
-        self.model = model_class(conf=model_config).to(self.device)
-        state_key = "best_state_dict" if "best_state_dict" in checkpoint else "state_dict"
-        self.model.load_state_dict(checkpoint[state_key], strict=False)
-        self.model.eval()
-
-    def transcribe(self, input_path: Path, output_path: Path) -> None:
-        try:
-            import soxr
-        except ImportError as exc:
-            raise SystemExit("Missing Transkun dependency: soxr") from exc
-
-        sample_rate, audio = self.read_audio(input_path)
-        if sample_rate != self.model.fs:
-            audio = soxr.resample(audio, sample_rate, self.model.fs)
-
-        input_tensor = self.torch.from_numpy(audio).to(self.device)
-        with self.torch.no_grad():
-            notes = self.model.transcribe(
-                input_tensor,
-                stepInSecond=self.segment_hop_size,
-                segmentSizeInSecond=self.segment_size,
-                discardSecondHalf=False,
-            )
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.write_midi(notes).write(output_path)
+    return TranskunModel(
+        checkpoint=config.checkpoint,
+        device=config.device,
+        segment_hop_size=config.segment_hop_size,
+        segment_size=config.segment_size,
+    )
 
 
 def midi_quantize(source: Path) -> Path:
@@ -266,33 +229,51 @@ def trim_midi_silence(midi) -> None:
             previous = absolute_time
 
 
-def transcribe_file(
-    input_path: Path,
-    output_path: Path,
-    transcriber: TranskunTranscriber,
-) -> None:
-    print(f"Transcribing: {input_path}")
-    print(f"Device: {transcriber.device}")
-    print(f"Output: {output_path}")
-    transcriber.transcribe(input_path, output_path)
-
-    if not output_path.is_file():
-        raise SystemExit(f"Transkun completed but did not create: {output_path}")
-    print(f"Done: {output_path}")
-    if ENABLE_QUANTIZE:
-        quantized_path = midi_quantize(output_path)
-        print(f"Quantized copy: {quantized_path}")
+@dataclass(frozen=True)
+class AudioToMidiResult:
+    midi_path: Path
+    quantized_path: Path | None
 
 
-def is_selected_instrument(audio_path: Path) -> bool:
-    if not INSTRUMENTS:
-        return True
-    filename = audio_path.name.casefold()
-    return any(f"_({instrument.casefold()})_" in filename for instrument in INSTRUMENTS)
+class AudioToMidiStep:
+    """Execute one configured audio-to-MIDI model and optional quantization."""
+
+    def __init__(self, config: InstrumentAudioToMidiConfig) -> None:
+        self.config = config
+        self.model = create_audio_to_midi_model(config)
+
+    @property
+    def device(self) -> str:
+        return self.model.device
+
+    def run(self, input_path: Path, output_path: Path) -> AudioToMidiResult:
+        print(f"Audio-to-MIDI model: {self.config.model} ({self.config.checkpoint})")
+        print(f"Device: {self.device}")
+        print(f"Transcribing: {input_path}")
+        self.model.transcribe(input_path, output_path)
+        if not output_path.is_file():
+            raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
+
+        quantized_path = midi_quantize(output_path) if self.config.quantize else None
+        print(f"Wrote: {output_path}")
+        if quantized_path is not None:
+            print(f"Quantized copy: {quantized_path}")
+        return AudioToMidiResult(output_path, quantized_path)
+
+    def release(self) -> None:
+        """Release the loaded implementation model."""
+        if hasattr(self.model, "model"):
+            self.model.model = None
+
+
+def detect_instrument(audio_path: Path) -> str | None:
+    match = INSTRUMENT_LABEL.search(audio_path.name)
+    return match.group(1).casefold() if match else None
 
 
 def main() -> None:
     args = parse_args()
+    configured = load_config(args.config).audio_to_midi
     input_path = args.input.expanduser().resolve()
     configured_output = args.output.expanduser().resolve()
 
@@ -304,7 +285,8 @@ def main() -> None:
             if configured_output.suffix.lower() == ".mid"
             else configured_output / f"{input_path.stem}.mid"
         )
-        inputs = [(input_path, output_path)]
+        instrument = args.instrument or detect_instrument(input_path) or configured.default_instrument
+        inputs = [(input_path, output_path, instrument.casefold())]
     elif input_path.is_dir():
         inputs = []
         for audio_path in sorted(
@@ -312,26 +294,58 @@ def main() -> None:
             for path in input_path.rglob("*")
             if path.is_file()
             and path.suffix.lower() == ".wav"
-            and is_selected_instrument(path)
         ):
             relative_path = audio_path.relative_to(input_path).with_suffix(".mid")
-            inputs.append((audio_path, configured_output / relative_path))
+            instrument = args.instrument or detect_instrument(audio_path)
+            if instrument is None:
+                instrument = configured.default_instrument
+            inputs.append((audio_path, configured_output / relative_path, instrument.casefold()))
         if not inputs:
-            instrument_text = ", ".join(INSTRUMENTS) if INSTRUMENTS else "all"
-            raise SystemExit(
-                f"Input folder contains no matching WAV files "
-                f"(instruments: {instrument_text}): {input_path}"
-            )
+            raise SystemExit(f"Input folder contains no WAV files: {input_path}")
     else:
         raise SystemExit(f"Input audio does not exist: {input_path}")
 
-    transcriber = TranskunTranscriber(
-        device=args.device,
-        segment_hop_size=args.segment_hop_size,
-        segment_size=args.segment_size,
-    )
-    for audio_path, output_path in inputs:
-        transcribe_file(audio_path, output_path, transcriber)
+    steps: dict[str, AudioToMidiStep] = {}
+    for audio_path, output_path, instrument in inputs:
+        if instrument not in steps:
+            try:
+                instrument_config = configured.for_instrument(instrument)
+            except ValueError as exc:
+                print(f"Skipping {audio_path}: {exc}")
+                continue
+            selected_model = args.model or instrument_config.model
+            selected_checkpoint = args.checkpoint
+            if selected_checkpoint is None:
+                selected_checkpoint = (
+                    "large"
+                    if args.model == "muscriptor"
+                    else "2.0" if args.model == "transkun" else instrument_config.checkpoint
+                )
+            instrument_config = replace(
+                instrument_config,
+                model=selected_model,
+                checkpoint=selected_checkpoint,
+                device=args.device or instrument_config.device,
+                dtype=(
+                    instrument_config.dtype
+                    if args.dtype is None
+                    else None if args.dtype == "auto" else args.dtype
+                ),
+                segment_hop_size=(
+                    args.segment_hop_size
+                    if args.segment_hop_size is not None
+                    else instrument_config.segment_hop_size
+                ),
+                segment_size=(
+                    args.segment_size
+                    if args.segment_size is not None
+                    else instrument_config.segment_size
+                ),
+            )
+            steps[instrument] = AudioToMidiStep(instrument_config)
+        step = steps[instrument]
+        print(f"Instrument: {instrument}")
+        step.run(audio_path, output_path)
 
 
 if __name__ == "__main__":

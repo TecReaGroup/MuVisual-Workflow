@@ -6,14 +6,17 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "audio-separator[gpu]",
+    "beat-this>=1.1.0",
     "mido",
     "moduleconf",
+    "muscriptor>=0.3.0",
     "mutagen",
     "numpy",
     "partitura",
     "scipy",
     "soxr",
-    "torch",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
     "transkun",
 ]
 
@@ -21,9 +24,11 @@ dependencies = [
 muvisual = "muvisual_workflow.pipeline:main"
 muvisual-fix-midi = "muvisual_workflow.midi.normalizer:main"
 muvisual-gate = "muvisual_workflow.audio.noise_gate:main"
+muvisual-beats = "muvisual_workflow.audio.beat_detection:main"
+muvisual-muscriptor = "muvisual_workflow.audio.muscriptor:main"
 muvisual-separate = "muvisual_workflow.audio.separation:main"
 muvisual-split-midi = "muvisual_workflow.midi.hand_splitter:main"
-muvisual-transcribe = "muvisual_workflow.audio.transcription:main"
+muvisual-transcribe = "muvisual_workflow.audio.audio_to_midi:main"
 
 [build-system]
 requires = ["uv_build>=0.11.6,<0.12.0"]
@@ -31,9 +36,14 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
 
 [tool.uv]
 constraint-dependencies = ["numba>=0.59.1"]
+environments = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'linux'",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

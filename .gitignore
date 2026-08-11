@@ -44,6 +44,8 @@ data/develop/midi/*
 !data/develop/midi/.gitkeep
 data/develop/midi_fixed/*
 !data/develop/midi_fixed/.gitkeep
+data/develop/beats/*
+!data/develop/beats/.gitkeep
 
 *.mid
 *.mp3

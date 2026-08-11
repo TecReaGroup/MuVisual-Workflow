@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,12 +15,14 @@ import mutagen
 
 from muvisual_workflow.audio.separation import (
     AUDIO_EXTENSIONS,
-    DEFAULT_MODEL,
     create_separator,
     separate_with_loaded_model,
 )
 from muvisual_workflow.paths import DATA_DIR, PROJECT_ROOT
-from muvisual_workflow.audio.transcription import TranskunTranscriber, midi_quantize
+from muvisual_workflow.audio.audio_to_midi import (
+    AudioToMidiStep,
+)
+from muvisual_workflow.config import InstrumentAudioToMidiConfig, load_config
 
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
@@ -43,8 +45,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Process every audio file through the MuVisual pipeline.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument(
+        "--model", "--separation-model", dest="model", default=None,
+        help="Override the configured separation model",
+    )
+    parser.add_argument(
+        "--audio-to-midi-model",
+        choices=("muscriptor", "transkun"),
+        default=None,
+    )
+    parser.add_argument("--audio-to-midi-checkpoint", default=None)
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default=None,
+                        help="Override the configured audio-to-MIDI device")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="TOML configuration file (default: config/muvisual.toml)")
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
     return parser.parse_args()
@@ -168,27 +182,30 @@ def prepare_audio(
     )
 
 
-def finish_audio(job: PreparedAudio, transcriber: TranskunTranscriber) -> None:
+def finish_audio(
+    job: PreparedAudio,
+    audio_to_midi_step: AudioToMidiStep,
+) -> None:
     midi_path = job.midi_dir / f"{job.output_name}.mid"
     quantized_path = job.midi_dir / f"{job.output_name}_quantized.mid"
 
-    print(f"Transcribing: {job.gated_piano}")
-    transcriber.transcribe(job.gated_piano, midi_path)
-    midi_quantize(midi_path)
-    if not midi_path.is_file() or not quantized_path.is_file():
-        raise RuntimeError("Transcription did not create both MIDI files")
+    result = audio_to_midi_step.run(job.gated_piano, midi_path)
+    quantize = result.quantized_path is not None
+    if not midi_path.is_file() or (quantize and not quantized_path.is_file()):
+        raise RuntimeError("Transcription did not create the expected MIDI files")
 
     run_module("midi.normalizer", "--input", job.midi_dir, "--output", job.fixed_dir)
     fixed_midi = job.fixed_dir / midi_path.name
     fixed_quantized = job.fixed_dir / quantized_path.name
-    if not fixed_midi.is_file() or not fixed_quantized.is_file():
-        raise RuntimeError("MIDI fix did not create both output files")
+    if not fixed_midi.is_file() or (quantize and not fixed_quantized.is_file()):
+        raise RuntimeError("MIDI fix did not create the expected output files")
 
     shutil.copy2(fixed_midi, job.result_dir / fixed_midi.name)
-    shutil.copy2(fixed_quantized, job.result_dir / fixed_quantized.name)
+    if quantize:
+        shutil.copy2(fixed_quantized, job.result_dir / fixed_quantized.name)
 
     missing_results = [
-        path for path in expected_output_files(job.result_dir, job.output_name)
+        path for path in expected_output_files(job.result_dir, job.output_name, quantize)
         if not path.is_file()
     ]
     if missing_results:
@@ -202,18 +219,26 @@ def finish_audio(job: PreparedAudio, transcriber: TranskunTranscriber) -> None:
     job.result_dir.replace(job.destination_dir)
 
 
-def expected_output_files(directory: Path, output_name: str) -> tuple[Path, ...]:
-    return (
+def expected_output_files(
+    directory: Path,
+    output_name: str,
+    quantize: bool = True,
+) -> tuple[Path, ...]:
+    files = [
         directory / f"{output_name}.mp3",
         directory / f"{output_name}_piano.mp3",
         directory / f"{output_name}.mid",
-        directory / f"{output_name}_quantized.mid",
-    )
+    ]
+    if quantize:
+        files.append(directory / f"{output_name}_quantized.mid")
+    return tuple(files)
 
 
-def output_is_complete(output_root: Path, output_name: str) -> bool:
+def output_is_complete(output_root: Path, output_name: str, quantize: bool) -> bool:
     destination_dir = output_root / output_name
-    return all(path.is_file() for path in expected_output_files(destination_dir, output_name))
+    return all(
+        path.is_file() for path in expected_output_files(destination_dir, output_name, quantize)
+    )
 
 
 def release_separator(separator: object) -> None:
@@ -227,9 +252,9 @@ def release_separator(separator: object) -> None:
         torch.cuda.empty_cache()
 
 
-def release_transcriber(transcriber: TranskunTranscriber) -> None:
-    model = getattr(transcriber, "model", None)
-    transcriber.model = None
+def release_audio_to_midi_step(audio_to_midi_step: AudioToMidiStep) -> None:
+    model = getattr(audio_to_midi_step.model, "model", None)
+    audio_to_midi_step.release()
     del model
     gc.collect()
     torch = sys.modules.get("torch")
@@ -243,6 +268,7 @@ def process_audio(
     output_dir: Path,
     work_dir: Path,
     args: argparse.Namespace,
+    audio_to_midi_config: InstrumentAudioToMidiConfig,
 ) -> None:
     separator = create_separator(
         work_dir / "separator",
@@ -260,19 +286,41 @@ def process_audio(
     finally:
         release_separator(separator)
 
-    transcriber = TranskunTranscriber(
-        device=args.device,
-        segment_hop_size=args.segment_hop_size,
-        segment_size=args.segment_size,
-    )
+    audio_to_midi_step = AudioToMidiStep(audio_to_midi_config)
     try:
-        finish_audio(job, transcriber)
+        finish_audio(job, audio_to_midi_step)
     finally:
-        release_transcriber(transcriber)
+        release_audio_to_midi_step(audio_to_midi_step)
 
 
 def main() -> None:
     args = parse_args()
+    config = load_config(args.config)
+    audio_to_midi_config = config.audio_to_midi.for_instrument("piano")
+    if args.audio_to_midi_model is not None:
+        checkpoint = args.audio_to_midi_checkpoint or (
+            "large" if args.audio_to_midi_model == "muscriptor" else "2.0"
+        )
+        audio_to_midi_config = replace(
+            audio_to_midi_config,
+            model=args.audio_to_midi_model,
+            checkpoint=checkpoint,
+        )
+    elif args.audio_to_midi_checkpoint is not None:
+        audio_to_midi_config = replace(
+            audio_to_midi_config,
+            checkpoint=args.audio_to_midi_checkpoint,
+        )
+    if args.device is not None:
+        audio_to_midi_config = replace(audio_to_midi_config, device=args.device)
+    if args.segment_hop_size is not None:
+        audio_to_midi_config = replace(
+            audio_to_midi_config,
+            segment_hop_size=args.segment_hop_size,
+        )
+    if args.segment_size is not None:
+        audio_to_midi_config = replace(audio_to_midi_config, segment_size=args.segment_size)
+    args.model = args.model or config.separation_model
     input_dir = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
 
@@ -313,7 +361,7 @@ def main() -> None:
         batch_work_dir = Path(temporary_dir)
         for index, (source, output_name) in enumerate(unique_audio_files, start=1):
             destination_dir = output_dir / output_name
-            if output_is_complete(output_dir, output_name):
+            if output_is_complete(output_dir, output_name, audio_to_midi_config.quantize):
                 skipped_count += 1
                 print(
                     f"\n[Skip {index}/{len(unique_audio_files)}] Already completed: "
@@ -329,6 +377,7 @@ def main() -> None:
                     output_dir,
                     batch_work_dir / str(index),
                     args,
+                    audio_to_midi_config,
                 )
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 failures.append((source, str(exc)))
