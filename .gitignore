@@ -46,6 +46,8 @@ data/develop/midi_fixed/*
 !data/develop/midi_fixed/.gitkeep
 data/develop/beats/*
 !data/develop/beats/.gitkeep
+data/output/*
+!data/output/.gitkeep
 
 temp/
 
