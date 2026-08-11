@@ -30,120 +30,90 @@ vps 解压后覆盖性放到对应位置
 
 ## api
 
-### 部署
-
-Modal 入口位于 `src/muvisual_workflow/modal_app.py`，以 Python 模块方式部署。
-
-```bash
-make install
-make modal-setup
-make modal-deploy
-```
-
-部署成功后终端会输出 `process-audio` 的 HTTPS URL。后续示例中的
-`$MODAL_URL` 或 `MODAL_URL` 均表示这个完整 URL。
-
-接口使用 L40S GPU，模型缓存在持久化的 `muvisual-model-cache` Volume 中。
-第一次请求需要下载模型，耗时会明显长于后续请求。
-
-### 接口约定
+浏览器不要直接调用 Modal。由 Web 的 Node API 验证用户身份、上传文件，并把
+Modal 返回的 ZIP 原样转发给浏览器：
 
 ```txt
-POST $MODAL_URL
-Content-Type: multipart/form-data
+浏览器 -> Node API -> Modal -> Node API -> ZIP 下载
 ```
 
-请求体只有一个字段：
+### Node API
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `file` | File | 是 | 单个音频文件，字段名必须为 `file` |
+部署后，将 `process-audio` 的完整 HTTPS URL 配置为 Node 服务端环境变量
+`MODAL_URL`。不要使用 `NEXT_PUBLIC_` 等会暴露给浏览器的变量名。
 
-支持的文件扩展名：`.wav`、`.flac`、`.mp3`、`.ogg`、`.opus`、`.m4a`、
-`.aiff`、`.ac3`。文件必须包含非空的 `title` 和 `album` 音频标签，服务端使用
-这两个标签生成 `歌名_专辑名` 输出目录。
+下面使用 Node 20+ Web API 写法。`requireUser` 表示 Web 项目现有的 Session、JWT
+或 OAuth 校验逻辑；未登录时必须在调用 Modal 前返回 `401`。
 
-不要手动设置请求的 `Content-Type`。浏览器、curl 或 HTTP SDK 需要自行生成
-`multipart/form-data` 的 boundary。
+```js
+export async function POST(request) {
+  const user = await requireUser(request);
+  if (!user) {
+    return Response.json({ detail: "Unauthorized" }, { status: 401 });
+  }
 
-成功响应：
+  const incoming = await request.formData();
+  const file = incoming.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return Response.json({ detail: "file is required" }, { status: 400 });
+  }
 
-```txt
-HTTP/1.1 200 OK
-Content-Type: application/zip
-Content-Disposition: attachment; filename="muvisual-output.zip"; filename*=UTF-8''...
-```
+  const form = new FormData();
+  form.set("file", file, file.name);
 
-响应体是 ZIP 二进制数据，不能按 JSON 或文本读取。ZIP 根目录为
-`歌名_专辑名/`，其内容与本文开头的目录结构一致。
+  const modalResponse = await fetch(process.env.MODAL_URL, {
+    method: "POST",
+    body: form,
+    redirect: "follow",
+    signal: AbortSignal.timeout(60 * 60 * 1000),
+  });
 
-失败响应使用 FastAPI JSON 格式：
+  const headers = new Headers();
+  headers.set(
+    "Content-Type",
+    modalResponse.headers.get("Content-Type") ?? "application/octet-stream",
+  );
+  const disposition = modalResponse.headers.get("Content-Disposition");
+  if (disposition) headers.set("Content-Disposition", disposition);
 
-```json
-{
-  "detail": "错误原因"
+  return new Response(modalResponse.body, {
+    status: modalResponse.status,
+    headers,
+  });
 }
 ```
 
-| 状态码 | 含义 |
-| --- | --- |
-| `400` | 上传文件为空 |
-| `415` | 文件扩展名不受支持 |
-| `422` | 缺少 `file` 字段、音频标签无效或流水线处理失败 |
-| `500` | Modal 或服务端发生未处理错误 |
+不要手动设置上传请求的 `Content-Type`，`FormData` 会生成正确的 multipart
+boundary。Node API 也不要把 ZIP 转换成 JSON、Base64 或字符串。
 
-### Web 接入方式
+当前 Modal 端点没有启用 Proxy Auth，调用它不需要 Modal 密钥。因此必须将
+`MODAL_URL` 保存在服务端，并由 Node API 完成用户身份验证和访问控制。
 
-当前接口是同步的长耗时接口。Modal Web Function 单次 HTTP 等待窗口为 150 秒，
-超过后会返回 303 并通过结果 URL 继续等待。该跳转机制不兼容跨域 CORS 请求，
-而且当前端点没有开放浏览器跨域访问，因此生产 Web 页面不要直接请求 Modal URL。
+### 浏览器上传和下载
 
-推荐调用链：
-
-```txt
-浏览器 -> Web 应用同源后端 -> Modal process-audio -> ZIP -> 浏览器下载
-```
-
-Web 后端代理需要：
-
-1. 接收浏览器提交的 `multipart/form-data`。
-2. 将单个 `file` 转发给 Modal，保持原始文件名和 MIME 类型。
-3. 启用 HTTP 重定向跟随，并将请求超时设置为整个音频处理可接受的时长。
-4. 流式转发 Modal 返回的 ZIP、`Content-Type` 和 `Content-Disposition`。
-5. 不要把 ZIP 转换为 JSON、Base64 或字符串。
-
-浏览器调用同源代理并下载 ZIP：
+浏览器只调用同源 Node API，现有 Session Cookie 会随同源请求自动携带；如果
+Web 使用 Bearer Token，则在请求中添加对应的 `Authorization` Header。
 
 ```js
 async function processAndDownload(file) {
   const form = new FormData();
-  form.append("file", file, file.name);
+  form.set("file", file, file.name);
 
   const response = await fetch("/api/muvisual/process", {
     method: "POST",
     body: form,
   });
-
   if (!response.ok) {
     const error = await response.json().catch(() => null);
     throw new Error(error?.detail ?? `处理失败：HTTP ${response.status}`);
   }
 
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/zip")) {
-    throw new Error(`响应不是 ZIP：${contentType || "unknown"}`);
-  }
-
-  const disposition = response.headers.get("content-disposition") ?? "";
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
   const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   const filename = encodedName
     ? decodeURIComponent(encodedName)
     : "muvisual-output.zip";
-
-  const blob = await response.blob();
-  if (blob.size === 0) {
-    throw new Error("下载的 ZIP 为空");
-  }
 
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -154,50 +124,6 @@ async function processAndDownload(file) {
 }
 ```
 
-### curl 验证
-
-Linux/macOS：
-
-```bash
-export MODAL_URL="https://YOUR_MODAL_ENDPOINT"
-curl --fail-with-body --show-error --location \
-  --dump-header response.headers \
-  --form "file=@./song.flac" \
-  --output result.zip \
-  --write-out "HTTP %{http_code}, %{content_type}, %{size_download} bytes\n" \
-  "$MODAL_URL"
-
-unzip -t result.zip
-unzip -l result.zip
-```
-
-Windows PowerShell 应显式使用 `curl.exe`，避免调用 PowerShell 的 curl 别名：
-
-```powershell
-$env:MODAL_URL = "https://YOUR_MODAL_ENDPOINT"
-curl.exe --fail-with-body --show-error --location `
-  --dump-header response.headers `
-  --form "file=@.\song.flac" `
-  --output result.zip `
-  --write-out "HTTP %{http_code}, %{content_type}, %{size_download} bytes\n" `
-  $env:MODAL_URL
-
-tar -tf result.zip
-Expand-Archive -LiteralPath result.zip -DestinationPath data\output -Force
-```
-
-验证成功时应满足：HTTP 状态码为 `200`、Content-Type 包含
-`application/zip`、下载字节数大于零，且 `tar -tf` 或 `unzip -t` 没有报告
-ZIP 损坏。
-
-### 本地批量调用
-
-不经过 Web URL，也可以逐个调用 Modal GPU Function 处理 `data/input`：
-
-```bash
-make modal
-```
-
-每个音频对应一次独立的 Modal 调用。客户端收到 ZIP 后进行路径校验，再将
-`歌名_专辑名/` 覆盖解压到 `data/output`。单个文件失败不会阻止后续文件继续
-处理，全部结束后会汇总失败。
+上传字段名必须为 `file`。支持 `.wav`、`.flac`、`.mp3`、`.ogg`、`.opus`、
+`.m4a`、`.aiff`、`.ac3`，音频必须包含非空的 `title` 和 `album` 标签。成功时
+返回 `application/zip`；失败时返回 `{ "detail": "错误原因" }`。

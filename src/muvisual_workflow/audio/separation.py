@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -117,6 +118,10 @@ def create_separator(
         "output_format": "WAV",
         "output_single_stem": output_single_stem,
     }
+    model_dir = os.environ.get("AUDIO_SEPARATOR_MODEL_DIR")
+    if model_dir:
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+        separator_kwargs["model_file_dir"] = model_dir
 
     separator = Separator(**separator_kwargs)
     print(f"Loading model from audio-separator registry: {model}")

@@ -68,6 +68,9 @@ def _zip_directory(directory: Path) -> bytes:
     gpu=GPU_TYPE,
     timeout=60 * 60,
     volumes={CACHE_DIR: model_cache},
+    secrets=[
+        modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])
+    ],
 )
 def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     """Process one serialized audio upload in a GPU container."""
