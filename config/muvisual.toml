@@ -8,12 +8,12 @@ dtype = "auto"
 
 [audio_to_midi.instruments.piano]
 model = "muscriptor"
-checkpoint = "large"
+checkpoint = "medium"
 target_instruments = ["acoustic_piano"]
 
 [audio_to_midi.instruments.other]
 model = "muscriptor"
-checkpoint = "large"
+checkpoint = "medium"
 target_instruments = ["string_ensemble"]
 
 # [audio_to_midi.instruments.guitar]

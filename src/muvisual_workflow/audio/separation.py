@@ -19,8 +19,10 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
-from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR
 
+USE_LOCAL_MODEL = True
+LOCAL_MODEL_DIR = DATA_DIR / "model" / "BS-Roformer-SW"
 DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
@@ -118,13 +120,21 @@ def create_separator(
         "output_format": "WAV",
         "output_single_stem": output_single_stem,
     }
-    model_dir = os.environ.get("AUDIO_SEPARATOR_MODEL_DIR")
+    model_dir = (
+        LOCAL_MODEL_DIR
+        if USE_LOCAL_MODEL and LOCAL_MODEL_DIR.is_dir()
+        else os.environ.get("AUDIO_SEPARATOR_MODEL_DIR")
+    )
     if model_dir:
-        Path(model_dir).mkdir(parents=True, exist_ok=True)
-        separator_kwargs["model_file_dir"] = model_dir
+        model_dir = Path(model_dir)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        separator_kwargs["model_file_dir"] = str(model_dir)
 
     separator = Separator(**separator_kwargs)
-    print(f"Loading model from audio-separator registry: {model}")
+    if model_dir:
+        print(f"Loading model from local directory: {model_dir / model}")
+    else:
+        print(f"Loading model from audio-separator registry: {model}")
     separator.load_model(model_filename=model)
     model_instance = separator.model_instance
     if output_single_stem is not None and hasattr(model_instance, "process_all_stems"):
