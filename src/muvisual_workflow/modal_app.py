@@ -32,6 +32,7 @@ SUPPORTED_EXTENSIONS = {
 
 app = modal.App(APP_NAME)
 model_cache = modal.Volume.from_name("muvisual-model-cache", create_if_missing=True)
+read_only_model_cache = model_cache.with_mount_options(read_only=True)
 web_image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
     "fastapi", "python-multipart"
 )
@@ -66,16 +67,46 @@ def _zip_directory(directory: Path) -> bytes:
 
 @app.function(
     image=image,
-    gpu=GPU_TYPE,
     timeout=60 * 60,
     volumes={CACHE_DIR: model_cache},
     secrets=[
         modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])
     ],
 )
+def warmup_models() -> None:
+    """Download all runtime model weights into the shared Volume once."""
+    from muvisual_workflow.audio.beat_detection import BeatDetector
+    from muvisual_workflow.audio.audio_to_midi.muscriptor import MuscriptorModel
+    from muvisual_workflow.audio.separation import prepare_local_model
+
+    prepare_local_model()
+
+    beat_detector = BeatDetector("final0", device="cpu", dbn=False)
+    beat_detector.release()
+
+    muscriptor_model = MuscriptorModel(
+        model_name="medium",
+        device="cpu",
+        dtype="float32",
+        instruments=("acoustic_piano",),
+    )
+    muscriptor_model.model = None
+
+    model_cache.commit()
+    print("Model warmup complete: BS-Roformer-SW, Beat This, MuScriptor")
+
+
+@app.function(
+    image=image,
+    gpu=GPU_TYPE,
+    timeout=60 * 60,
+    volumes={CACHE_DIR: read_only_model_cache},
+    secrets=[
+        modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])
+    ],
+)
 def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     """Process one serialized audio upload in a GPU container."""
-    from muvisual_workflow.audio.separation import prepare_local_model
     from muvisual_workflow.core.config import load_config
     from muvisual_workflow.workflow.pipeline import (
         TEMP_DIR,
@@ -88,9 +119,6 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
         raise ValueError(f"Unsupported audio extension: {suffix}")
     if not payload:
         raise ValueError("Audio file is empty")
-
-    prepare_local_model()
-    model_cache.commit()
 
     config = load_config()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -110,7 +138,6 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
             resolve_instrument_configs(config.audio_to_midi, _ApiArgs()),
             config.beat_detection,
         )
-        model_cache.commit()
         archive = _zip_directory(output_root / output_name)
     return output_name, archive
 
@@ -188,8 +215,17 @@ def _extract_result(archive: bytes, output_dir: Path, output_name: str) -> Path:
 
 
 @app.local_entrypoint()
-def main(input_dir: str = "data/input", output_dir: str = "data/output") -> None:
+def main(
+    input_dir: str = "data/input",
+    output_dir: str = "data/output",
+    warmup_only: bool = False,
+) -> None:
     """Process local input files through one Modal request per audio file."""
+    if warmup_only:
+        warmup_models.remote()
+        print("Model warmup completed")
+        return
+
     source_dir = Path(input_dir).expanduser().resolve()
     destination_dir = Path(output_dir).expanduser().resolve()
     if not source_dir.is_dir():

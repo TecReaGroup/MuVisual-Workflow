@@ -12,6 +12,7 @@ modal-setup:
 # 生产环境部署
 modal-deploy:
 	$(UV) run modal deploy -m muvisual_workflow.modal_app
+	$(UV) run modal run -m muvisual_workflow.modal_app --warmup-only
 
 # 生产环境运行测试
 modal-api:
@@ -20,7 +21,6 @@ modal-api:
 # 开发环境测试部署
 modal:
 	$(UV) run modal run -m muvisual_workflow.modal_app
-
 
 # Full pipeline: read audio tags, copy the original, detect beats once, and
 # separate all stems. Store every stem as MP3, gate/transcribe only configured
