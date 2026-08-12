@@ -2,7 +2,32 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
+import sys
+
+
+class _MuscriptorOutputFilter(io.TextIOBase):
+    """Suppress MuScriptor's per-segment timing output."""
+
+    def __init__(self, target: io.TextIOBase) -> None:
+        self._target = target
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if not line.startswith("[muscriptor]"):
+                self._target.write(f"{line}\n")
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer and not self._buffer.startswith("[muscriptor]"):
+            self._target.write(self._buffer)
+        self._buffer = ""
+        self._target.flush()
 
 
 class MuscriptorModel:
@@ -35,5 +60,6 @@ class MuscriptorModel:
 
     def transcribe(self, input_path: Path, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        midi_bytes = self.model.transcribe_to_midi(input_path, instruments=self.instruments)
+        with redirect_stdout(_MuscriptorOutputFilter(sys.stdout)):
+            midi_bytes = self.model.transcribe_to_midi(input_path, instruments=self.instruments)
         output_path.write_bytes(midi_bytes)
