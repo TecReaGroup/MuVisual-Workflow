@@ -13,7 +13,7 @@ dependencies = [
     "modal",
     "mido",
     "moduleconf",
-    "muscriptor>=0.3.0",
+    "muscriptor==0.3.0",
     "mutagen",
     "numpy",
     "partitura",

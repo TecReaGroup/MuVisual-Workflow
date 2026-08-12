@@ -1105,7 +1105,7 @@ requires-dist = [
     { name = "mido" },
     { name = "modal" },
     { name = "moduleconf" },
-    { name = "muscriptor", specifier = ">=0.3.0" },
+    { name = "muscriptor", specifier = "==0.3.0" },
     { name = "mutagen" },
     { name = "numpy" },
     { name = "partitura" },
