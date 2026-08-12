@@ -110,7 +110,7 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
 
 
 @app.function(image=web_image, timeout=60 * 60)
-@modal.fastapi_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 async def process_audio(file: UploadFile = File(...)) -> Response:
     """Accept one tagged audio file and return its output directory as ZIP."""
     suffix = Path(file.filename or "").suffix.lower()

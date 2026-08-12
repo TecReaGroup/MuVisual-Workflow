@@ -92,6 +92,5 @@ await processAudio("./song.m4a", "./data/output/result.zip");
 multipart boundary。接口支持 `.wav`、`.flac`、`.mp3`、`.ogg`、`.opus`、
 `.m4a`、`.aiff`、`.ac3`，音频必须包含非空的 `title` 和 `album` 标签。
 
-当前 Modal 端点没有启用 Proxy Auth，只需要配置 `MODAL_URL`。如果以后在
-`fastapi_endpoint` 上启用 `requires_proxy_auth=True`，再配置 `MODAL_KEY` 和
+当前 Modal 端点启用了 Proxy Auth，需要配置 `MODAL_URL`。再配置 `MODAL_KEY` 和
 `MODAL_SECRET`；代码会通过 `Modal-Key`、`Modal-Secret` Header 自动携带凭据。

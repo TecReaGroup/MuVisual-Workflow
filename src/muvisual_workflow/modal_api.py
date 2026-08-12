@@ -4,22 +4,60 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 from pathlib import Path, PurePosixPath
 import sys
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 import zipfile
 
-import modal
+from dotenv import dotenv_values
 
-from muvisual_workflow.modal_app import APP_NAME, SUPPORTED_EXTENSIONS, _extract_result
-
-
-WEB_FUNCTION_NAME = "process_audio"
+from muvisual_workflow.core.paths import PROJECT_ROOT
+from muvisual_workflow.modal_app import SUPPORTED_EXTENSIONS, _extract_result
 
 
-def _post_audio(endpoint_url: str, audio_path: Path) -> bytes:
+ENV_PATH = PROJECT_ROOT / ".env"
+
+
+def _load_endpoint_url() -> str:
+    endpoint_url = _load_env_value("MODAL_URL")
+    if not endpoint_url or not isinstance(endpoint_url, str):
+        raise RuntimeError(f"MODAL_URL is not configured in the environment or {ENV_PATH}")
+
+    endpoint_url = endpoint_url.strip()
+    parsed = urlsplit(endpoint_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("MODAL_URL must be an absolute HTTP(S) URL")
+    return endpoint_url
+
+
+def _load_env_value(name: str) -> str | None:
+    values = dotenv_values(ENV_PATH)
+    return os.environ.get(name) or os.environ.get(name.replace("_", "-")) or values.get(
+        name
+    ) or values.get(name.replace("_", "-"))
+
+
+def _load_proxy_auth() -> tuple[str, str]:
+    key = _load_env_value("MODAL_KEY")
+    secret = _load_env_value("MODAL_SECRET")
+    if not key or not secret:
+        raise RuntimeError(
+            "MODAL_KEY and MODAL_SECRET must be configured in the environment or "
+            f"{ENV_PATH}"
+        )
+    return key.strip(), secret.strip()
+
+
+def _post_audio(
+    endpoint_url: str,
+    audio_path: Path,
+    modal_key: str,
+    modal_secret: str,
+) -> bytes:
     boundary = uuid.uuid4().hex
     filename = f"input{audio_path.suffix.lower()}"
     prefix = (
@@ -31,7 +69,11 @@ def _post_audio(endpoint_url: str, audio_path: Path) -> bytes:
     request = Request(
         endpoint_url,
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Modal-Key": modal_key,
+            "Modal-Secret": modal_secret,
+        },
         method="POST",
     )
     try:
@@ -76,16 +118,14 @@ def main() -> None:
     if not audio_files:
         raise FileNotFoundError(f"No supported audio files found in: {input_dir}")
 
-    endpoint = modal.Function.from_name(APP_NAME, WEB_FUNCTION_NAME)
-    endpoint_url = endpoint.get_web_url()
-    if not endpoint_url:
-        raise RuntimeError(f"Deployed function has no web URL: {WEB_FUNCTION_NAME}")
+    endpoint_url = _load_endpoint_url()
+    modal_key, modal_secret = _load_proxy_auth()
 
     failures: list[tuple[Path, str]] = []
     for index, audio_path in enumerate(audio_files, start=1):
         print(f"[{index}/{len(audio_files)}] Uploading: {audio_path}")
         try:
-            archive = _post_audio(endpoint_url, audio_path)
+            archive = _post_audio(endpoint_url, audio_path, modal_key, modal_secret)
             output_name = _read_output_name(archive)
             result_path = _extract_result(archive, output_dir, output_name)
         except Exception as exc:
