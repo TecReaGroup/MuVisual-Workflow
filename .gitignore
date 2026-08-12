@@ -34,8 +34,6 @@ Thumbs.db
 # Large local audio/model assets and generated outputs
 data/develop/audio/*
 !data/develop/audio/.gitkeep
-data/develop/model/*
-!data/develop/model/.gitkeep
 data/develop/stem/*
 !data/develop/stem/.gitkeep
 data/develop/stem_gated/*

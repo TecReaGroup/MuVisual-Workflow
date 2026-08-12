@@ -23,6 +23,8 @@ from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR
 
 USE_LOCAL_MODEL = True
 LOCAL_MODEL_DIR = DATA_DIR / "model" / "BS-Roformer-SW"
+LOCAL_MODEL_BUCKET = "hf://buckets/Trgroup/BS-Roformer-SW"
+LOCAL_MODEL_FILES = ("BS-Roformer-SW.ckpt", "BS-Roformer-SW.yaml")
 DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
@@ -100,6 +102,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def prepare_local_model() -> Path:
+    """Ensure the configured BS-Roformer model directory is ready to load."""
+    model_dir = Path(os.environ.get("AUDIO_SEPARATOR_MODEL_DIR", LOCAL_MODEL_DIR))
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    if not any(model_dir.iterdir()):
+        try:
+            from huggingface_hub import sync_bucket
+        except ImportError as exc:
+            raise RuntimeError(
+                "Missing dependency huggingface-hub; run `uv sync` from the project root"
+            ) from exc
+
+        print(f"Downloading local BS-Roformer model to: {model_dir}")
+        sync_bucket(
+            LOCAL_MODEL_BUCKET,
+            str(model_dir),
+            include=list(LOCAL_MODEL_FILES),
+        )
+
+    missing_files = [name for name in LOCAL_MODEL_FILES if not (model_dir / name).is_file()]
+    if missing_files:
+        raise RuntimeError(
+            "Local model directory is not empty but is missing required file(s): "
+            f"{', '.join(missing_files)}. Directory: {model_dir}"
+        )
+    return model_dir
+
+
 def create_separator(
     output_dir: Path,
     model: str,
@@ -120,11 +151,7 @@ def create_separator(
         "output_format": "WAV",
         "output_single_stem": output_single_stem,
     }
-    model_dir = (
-        LOCAL_MODEL_DIR
-        if USE_LOCAL_MODEL and LOCAL_MODEL_DIR.is_dir()
-        else os.environ.get("AUDIO_SEPARATOR_MODEL_DIR")
-    )
+    model_dir = prepare_local_model() if USE_LOCAL_MODEL else None
     if model_dir:
         model_dir = Path(model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)

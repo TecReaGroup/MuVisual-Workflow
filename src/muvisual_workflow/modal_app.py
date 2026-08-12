@@ -48,7 +48,7 @@ image = (
         {
             "MUVISUAL_PROJECT_ROOT": PROJECT_DIR,
             "HF_HOME": f"{CACHE_DIR}/huggingface",
-            "AUDIO_SEPARATOR_MODEL_DIR": f"{CACHE_DIR}/audio-separator",
+            "AUDIO_SEPARATOR_MODEL_DIR": f"{CACHE_DIR}/BS-Roformer-SW",
         }
     )
 )
@@ -74,6 +74,7 @@ def _zip_directory(directory: Path) -> bytes:
 )
 def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     """Process one serialized audio upload in a GPU container."""
+    from muvisual_workflow.audio.separation import prepare_local_model
     from muvisual_workflow.core.config import load_config
     from muvisual_workflow.workflow.pipeline import (
         TEMP_DIR,
@@ -86,6 +87,9 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
         raise ValueError(f"Unsupported audio extension: {suffix}")
     if not payload:
         raise ValueError("Audio file is empty")
+
+    prepare_local_model()
+    model_cache.commit()
 
     config = load_config()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
