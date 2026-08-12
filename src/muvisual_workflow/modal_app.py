@@ -48,6 +48,7 @@ image = (
         {
             "MUVISUAL_PROJECT_ROOT": PROJECT_DIR,
             "HF_HOME": f"{CACHE_DIR}/huggingface",
+            "TORCH_HOME": f"{CACHE_DIR}/torch",
             "AUDIO_SEPARATOR_MODEL_DIR": f"{CACHE_DIR}/BS-Roformer-SW",
         }
     )
@@ -109,6 +110,7 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
             resolve_instrument_configs(config.audio_to_midi, _ApiArgs()),
             config.beat_detection,
         )
+        model_cache.commit()
         archive = _zip_directory(output_root / output_name)
     return output_name, archive
 
@@ -127,7 +129,7 @@ async def process_audio(file: UploadFile = File(...)) -> Response:
         raise HTTPException(400, "Uploaded audio file is empty")
 
     try:
-        output_name, archive = process_audio_file.remote(payload, suffix)
+        output_name, archive = await process_audio_file.remote.aio(payload, suffix)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
