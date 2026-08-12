@@ -48,6 +48,8 @@ data/develop/beats/*
 !data/develop/beats/.gitkeep
 data/output/*
 !data/output/.gitkeep
+data/model/*
+!data/model/.gitkeep
 
 temp/
 
