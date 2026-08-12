@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
 import io
-from pathlib import Path
 import sys
+from contextlib import redirect_stdout
+from pathlib import Path
+from typing import TextIO
 
 
 class _MuscriptorOutputFilter(io.TextIOBase):
     """Suppress MuScriptor's per-segment timing output."""
 
-    def __init__(self, target: io.TextIOBase) -> None:
+    def __init__(self, target: TextIO) -> None:
         self._target = target
         self._buffer = ""
 
