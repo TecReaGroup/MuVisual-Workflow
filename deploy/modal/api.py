@@ -18,7 +18,7 @@ import zipfile
 from dotenv import dotenv_values
 
 from muvisual_workflow.core.paths import PROJECT_ROOT
-from muvisual_workflow.modal_app import SUPPORTED_EXTENSIONS, _extract_result
+from deploy.modal.app import SUPPORTED_EXTENSIONS, _extract_result
 
 
 ENV_PATH = PROJECT_ROOT / ".env"

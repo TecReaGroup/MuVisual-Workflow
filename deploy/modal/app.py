@@ -1,4 +1,4 @@
-"""Modal API and local batch client for the MuVisual workflow."""
+"""Modal deployment and local batch entrypoint for the MuVisual workflow."""
 
 from __future__ import annotations
 
