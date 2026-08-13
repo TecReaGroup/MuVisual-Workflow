@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 from pathlib import Path, PurePosixPath
 import sys
+import time
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 import uuid
 import zipfile
@@ -22,15 +24,15 @@ from muvisual_workflow.modal_app import SUPPORTED_EXTENSIONS, _extract_result
 ENV_PATH = PROJECT_ROOT / ".env"
 
 
-def _load_endpoint_url() -> str:
-    endpoint_url = _load_env_value("MODAL_URL")
+def _load_endpoint_url(name: str) -> str:
+    endpoint_url = _load_env_value(name)
     if not endpoint_url or not isinstance(endpoint_url, str):
-        raise RuntimeError(f"MODAL_URL is not configured in the environment or {ENV_PATH}")
+        raise RuntimeError(f"{name} is not configured in the environment or {ENV_PATH}")
 
     endpoint_url = endpoint_url.strip()
     parsed = urlsplit(endpoint_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("MODAL_URL must be an absolute HTTP(S) URL")
+        raise RuntimeError(f"{name} must be an absolute HTTP(S) URL")
     return endpoint_url
 
 
@@ -57,7 +59,7 @@ def _post_audio(
     audio_path: Path,
     modal_key: str,
     modal_secret: str,
-) -> bytes:
+) -> str:
     boundary = uuid.uuid4().hex
     filename = f"input{audio_path.suffix.lower()}"
     prefix = (
@@ -77,11 +79,48 @@ def _post_audio(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=60 * 60) as response:
-            return response.read()
+        with urlopen(request, timeout=60) as response:
+            result = json.loads(response.read())
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Modal API returned HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"Modal submit API returned HTTP {exc.code}: {detail}") from exc
+
+    call_id = result.get("call_id") if isinstance(result, dict) else None
+    if not isinstance(call_id, str) or not call_id:
+        raise RuntimeError("Modal submit API returned an invalid call_id")
+    return call_id
+
+
+def _poll_result(
+    result_url: str,
+    call_id: str,
+    modal_key: str,
+    modal_secret: str,
+) -> bytes:
+    separator = "&" if "?" in result_url else "?"
+    request_url = f"{result_url}{separator}{urlencode({'call_id': call_id})}"
+    headers = {"Modal-Key": modal_key, "Modal-Secret": modal_secret}
+
+    while True:
+        request = Request(request_url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=60) as response:
+                if response.status == 202:
+                    time.sleep(2)
+                    continue
+                archive = response.read()
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Modal result API returned HTTP {exc.code}: {detail}"
+            ) from exc
+
+        content_type = response.headers.get_content_type()
+        if content_type != "application/zip":
+            raise RuntimeError(
+                f"Modal result API returned unexpected content type: {content_type}"
+            )
+        return archive
 
 
 def _read_output_name(archive: bytes) -> str:
@@ -118,14 +157,16 @@ def main() -> None:
     if not audio_files:
         raise FileNotFoundError(f"No supported audio files found in: {input_dir}")
 
-    endpoint_url = _load_endpoint_url()
+    endpoint_url = _load_endpoint_url("MODAL_URL")
+    result_url = _load_endpoint_url("MODAL_RESULT_URL")
     modal_key, modal_secret = _load_proxy_auth()
 
     failures: list[tuple[Path, str]] = []
     for index, audio_path in enumerate(audio_files, start=1):
         print(f"[{index}/{len(audio_files)}] Uploading: {audio_path}")
         try:
-            archive = _post_audio(endpoint_url, audio_path, modal_key, modal_secret)
+            call_id = _post_audio(endpoint_url, audio_path, modal_key, modal_secret)
+            archive = _poll_result(result_url, call_id, modal_key, modal_secret)
             output_name = _read_output_name(archive)
             result_path = _extract_result(archive, output_dir, output_name)
         except Exception as exc:

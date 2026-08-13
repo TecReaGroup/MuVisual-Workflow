@@ -99,7 +99,7 @@ def warmup_models() -> None:
 @app.function(
     image=image,
     gpu=GPU_TYPE,
-    timeout=60 * 60,
+    timeout=20 * 60,
     volumes={CACHE_DIR: read_only_model_cache},
     secrets=[
         modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])
@@ -142,10 +142,10 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     return output_name, archive
 
 
-@app.function(image=web_image, timeout=60 * 60)
+@app.function(image=web_image)
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-async def process_audio(file: UploadFile = File(...)) -> Response:
-    """Accept one tagged audio file and return its output directory as ZIP."""
+async def process_audio(file: UploadFile = File(...)) -> dict[str, str]:
+    """Accept one audio file and submit it for asynchronous processing."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
@@ -155,8 +155,23 @@ async def process_audio(file: UploadFile = File(...)) -> Response:
     if not payload:
         raise HTTPException(400, "Uploaded audio file is empty")
 
+    call = await process_audio_file.spawn.aio(payload, suffix)
+    return {"call_id": call.object_id}
+
+
+@app.function(image=web_image)
+@modal.fastapi_endpoint(method="GET", requires_proxy_auth=True)
+async def process_audio_result(call_id: str) -> Response:
+    """Return the current state or ZIP result of an asynchronous audio job."""
+    function_call = modal.FunctionCall.from_id(call_id)
     try:
-        output_name, archive = await process_audio_file.remote.aio(payload, suffix)
+        output_name, archive = await function_call.get.aio(timeout=0)
+    except modal.exception.OutputExpiredError as exc:
+        raise HTTPException(404, "Processing result expired") from exc
+    except modal.exception.NotFoundError as exc:
+        raise HTTPException(404, "Processing result not found") from exc
+    except TimeoutError:
+        return Response(status_code=202)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 
