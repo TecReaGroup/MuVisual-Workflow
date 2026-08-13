@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import modal
-from fastapi import File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
 
@@ -143,48 +143,52 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
 
 
 @app.function(image=web_image)
-@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-async def process_audio(file: UploadFile = File(...)) -> dict[str, str]:
-    """Accept one audio file and submit it for asynchronous processing."""
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
-        raise HTTPException(415, f"Unsupported audio extension; use: {supported}")
+@modal.concurrent(max_inputs=100)
+@modal.asgi_app(requires_proxy_auth=True)
+def api() -> FastAPI:
+    """Expose submission and polling routes through one Modal web endpoint."""
+    web_app = FastAPI()
 
-    payload = await file.read()
-    if not payload:
-        raise HTTPException(400, "Uploaded audio file is empty")
+    @web_app.post("/submit")
+    async def submit(file: UploadFile = File(...)) -> dict[str, str]:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
+            supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            raise HTTPException(415, f"Unsupported audio extension; use: {supported}")
 
-    call = await process_audio_file.spawn.aio(payload, suffix)
-    return {"call_id": call.object_id}
+        payload = await file.read()
+        if not payload:
+            raise HTTPException(400, "Uploaded audio file is empty")
 
+        call = await process_audio_file.spawn.aio(payload, suffix)
+        return {"call_id": call.object_id}
 
-@app.function(image=web_image)
-@modal.fastapi_endpoint(method="GET", requires_proxy_auth=True)
-async def process_audio_result(call_id: str) -> Response:
-    """Return the current state or ZIP result of an asynchronous audio job."""
-    function_call = modal.FunctionCall.from_id(call_id)
-    try:
-        output_name, archive = await function_call.get.aio(timeout=0)
-    except modal.exception.OutputExpiredError as exc:
-        raise HTTPException(404, "Processing result expired") from exc
-    except modal.exception.NotFoundError as exc:
-        raise HTTPException(404, "Processing result not found") from exc
-    except TimeoutError:
-        return Response(status_code=202)
-    except Exception as exc:
-        raise HTTPException(422, str(exc)) from exc
+    @web_app.get("/result/{call_id}")
+    async def result(call_id: str) -> Response:
+        function_call = modal.FunctionCall.from_id(call_id)
+        try:
+            output_name, archive = await function_call.get.aio(timeout=0)
+        except modal.exception.OutputExpiredError as exc:
+            raise HTTPException(404, "Processing result expired") from exc
+        except modal.exception.NotFoundError as exc:
+            raise HTTPException(404, "Processing result not found") from exc
+        except TimeoutError:
+            return Response(status_code=202)
+        except Exception as exc:
+            raise HTTPException(422, str(exc)) from exc
 
-    return Response(
-        content=archive,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": (
-                'attachment; filename="muvisual-output.zip"; '
-                f"filename*=UTF-8''{quote(f'{output_name}.zip')}"
-            )
-        },
-    )
+        return Response(
+            content=archive,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="muvisual-output.zip"; '
+                    f"filename*=UTF-8''{quote(f'{output_name}.zip')}"
+                )
+            },
+        )
+
+    return web_app
 
 
 class _ApiArgs:
