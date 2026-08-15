@@ -21,7 +21,11 @@ class _LocalTimezoneFormatter(logging.Formatter):
         datefmt: str | None = None,
     ) -> str:
         current = datetime.fromtimestamp(record.created).astimezone()
-        return current.strftime(datefmt or "%Y-%m-%d %H:%M:%S%z")
+        if datefmt is not None:
+            return current.strftime(datefmt)
+        timezone = current.strftime("%z")
+        timezone = f"{timezone[:3]}:{timezone[3:]}"
+        return f"{current:%Y-%m-%d %H:%M:%S} {timezone}"
 
 
 class _DailyFileHandler(logging.Handler):
