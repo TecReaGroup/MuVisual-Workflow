@@ -15,11 +15,13 @@ import re
 from typing import Protocol
 
 from muvisual_workflow.core.config import InstrumentAudioToMidiConfig, load_config
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
 INSTRUMENT_LABEL = re.compile(r"(?:^|[_\s-])\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
+logger = get_logger("audio_to_midi")
 
 
 class AudioToMidiModel(Protocol):
@@ -98,14 +100,18 @@ class AudioToMidiStep:
         return self.model.device
 
     def run(self, input_path: Path, output_path: Path) -> AudioToMidiResult:
-        print(f"Audio-to-MIDI model: {self.config.model} ({self.config.checkpoint})")
-        print(f"Device: {self.device}")
-        print(f"Transcribing: {input_path}")
+        logger.info(
+            "Audio-to-MIDI model: %s (%s)",
+            self.config.model,
+            self.config.checkpoint,
+        )
+        logger.info("Device: %s", self.device)
+        logger.info("Transcribing: %s", input_path)
         self.model.transcribe(input_path, output_path)
         if not output_path.is_file():
             raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
 
-        print(f"Wrote: {output_path}")
+        logger.info("Wrote: %s", output_path)
         return AudioToMidiResult(output_path, False)
 
     def release(self) -> None:
@@ -120,6 +126,7 @@ def detect_instrument(audio_path: Path) -> str | None:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     configured = load_config(args.config).audio_to_midi
     input_path = args.input.expanduser().resolve()
@@ -159,7 +166,7 @@ def main() -> None:
             try:
                 instrument_config = configured.for_instrument(instrument)
             except ValueError as exc:
-                print(f"Skipping {audio_path}: {exc}")
+                logger.warning("Skipping %s: %s", audio_path, exc)
                 continue
             selected_model = args.model or instrument_config.model
             selected_checkpoint = args.checkpoint
@@ -192,7 +199,7 @@ def main() -> None:
             )
             steps[instrument] = AudioToMidiStep(instrument_config)
         step = steps[instrument]
-        print(f"Instrument: {instrument}")
+        logger.info("Instrument: %s", instrument)
         step.run(audio_path, output_path)
 
 

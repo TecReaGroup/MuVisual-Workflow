@@ -11,11 +11,11 @@ from pathlib import Path
 import shutil
 from statistics import median
 import subprocess
-import sys
 import tempfile
 from typing import Any, Iterable
 
 from muvisual_workflow.core.config import load_config
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
 
 _OCTAVE_CORRECTION = True
@@ -279,6 +279,7 @@ SUPPORTED_EXTENSIONS = frozenset({".flac", ".m4a", ".mp3", ".ogg", ".wav", ".wma
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "beats"
 TEMP_DIR = PROJECT_ROOT / "temp"
+logger = get_logger("beat_detection")
 
 
 def find_audio_files(input_path: Path) -> list[Path]:
@@ -432,7 +433,7 @@ def detect_path(
 ) -> int:
     files = find_audio_files(input_path)
     if not files:
-        print(f"No supported audio files found in {input_path}")
+        logger.warning("No supported audio files found in %s", input_path)
         return 0
     root = input_path if input_path.is_dir() else input_path.parent
     detector = BeatDetector(model_name, device, dbn)
@@ -441,14 +442,15 @@ def detect_path(
         destination = (output_dir / source.relative_to(root)).with_suffix(".json")
         try:
             write_result(detector, source, destination)
-            print(f"Wrote {destination}")
+            logger.info("Wrote: %s", destination)
         except Exception as exc:  # keep processing remaining files
             failures += 1
-            print(f"Failed {source}: {exc}", file=sys.stderr)
+            logger.error("Failed %s: %s", source, exc)
     return failures
 
 
 def main() -> int:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Detect beats and downbeats with Beat This.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -461,7 +463,7 @@ def main() -> int:
     config = load_config(args.config).beat_detection
     enabled = config.enabled if args.enabled is None else args.enabled
     if not enabled:
-        print("Beat detection is disabled by configuration")
+        logger.info("Beat detection is disabled by configuration")
         return 0
     try:
         return 1 if detect_path(
@@ -472,7 +474,7 @@ def main() -> int:
             config.dbn if args.dbn is None else args.dbn,
         ) else 0
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        logger.error("Error: %s", exc)
         return 2
 
 

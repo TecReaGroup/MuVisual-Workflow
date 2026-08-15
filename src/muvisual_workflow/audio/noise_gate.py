@@ -17,7 +17,10 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+
+logger = get_logger("noise_gate")
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "stem_gated"
@@ -126,6 +129,7 @@ def gate_file(
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     if args.attack_ms < 0 or args.hold_ms < 0 or args.release_ms <= 0 or args.analysis_ms <= 0:
         raise SystemExit("attack/hold/analysis must be >= 0 and release must be > 0")
@@ -143,7 +147,7 @@ def main() -> None:
             args.release_ms,
             args.analysis_ms,
         )
-        print(f"{source.name} -> {destination}")
+        logger.info("%s -> %s", source.name, destination)
 
 
 if __name__ == "__main__":

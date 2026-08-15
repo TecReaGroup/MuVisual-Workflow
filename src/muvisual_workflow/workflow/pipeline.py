@@ -27,6 +27,7 @@ from muvisual_workflow.core.config import (
     InstrumentAudioToMidiConfig,
     load_config,
 )
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
 from muvisual_workflow.midi.normalizer import normalize_file
 from muvisual_workflow.midi.quantization import quantize_midi
@@ -34,6 +35,7 @@ from muvisual_workflow.midi.quantization import quantize_midi
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
 TEMP_DIR = PROJECT_ROOT / "temp"
+logger = get_logger("pipeline")
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 STEM_LABEL = re.compile(r"\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
 BS_ROFORMER_SW_STEMS = ("bass", "drums", "guitar", "other", "piano", "vocals")
@@ -264,7 +266,7 @@ def process_instrument(
     midi_path = instrument_dir / f"{output_name}_{instrument}.mid"
     gate_file(stem_path, gated_path)
     convert_to_mp3(gated_path, audio_path)
-    print(f"Gated stem: {audio_path}")
+    logger.info("Gated stem: %s", audio_path)
 
     step = AudioToMidiStep(config)
     try:
@@ -272,12 +274,15 @@ def process_instrument(
     finally:
         release_audio_to_midi_step(step)
     key, bpm, delay, _, _, _ = normalize_file(midi_path, midi_path)
-    print(
-        f"Normalized MIDI: {midi_path} "
-        f"(key={key}, bpm={bpm:.2f}, delay={delay * 1000:.1f}ms)"
+    logger.info(
+        "Normalized MIDI: %s (key=%s, bpm=%.2f, delay=%.1fms)",
+        midi_path,
+        key,
+        bpm,
+        delay * 1000,
     )
     quantize_midi(midi_path, midi_path, gated_path)
-    print(f"Quantized MIDI: {midi_path}")
+    logger.info("Quantized MIDI: %s", midi_path)
 
 
 def write_stem_audio(
@@ -293,7 +298,7 @@ def write_stem_audio(
         instrument_dir.mkdir(parents=True)
         audio_path = instrument_dir / f"{output_name}_{instrument}.mp3"
         convert_to_mp3(stem_path, audio_path)
-        print(f"Stored separated stem without transcription: {audio_path}")
+        logger.info("Stored separated stem without transcription: %s", audio_path)
         return
     process_instrument(
         instrument,
@@ -320,7 +325,7 @@ def process_audio(
     result_dir.mkdir(parents=True)
     original_name = f"{output_name}.mp3"
     convert_to_mp3(source, result_dir / original_name)
-    print(f"Stored original audio: {result_dir / original_name}")
+    logger.info("Stored original audio: %s", result_dir / original_name)
 
     generate_beats(
         source,
@@ -332,7 +337,11 @@ def process_audio(
     separator = create_separator(stem_dir, separation_model)
     try:
         output_files = separate_with_loaded_model(separator, source, stem_dir)
-        print(f"Generated {len(output_files)} stem file(s): {', '.join(output_files)}")
+        logger.info(
+            "Generated %d stem file(s): %s",
+            len(output_files),
+            ", ".join(output_files),
+        )
     finally:
         release_separator(separator)
 
@@ -347,7 +356,7 @@ def process_audio(
     for instrument, stem_path in stems.items():
         instrument_config = instrument_configs.get(instrument)
         if instrument_config is not None:
-            print(f"Processing configured instrument: {instrument}")
+            logger.info("Processing configured instrument: %s", instrument)
         write_stem_audio(
             instrument,
             stem_path,
@@ -380,6 +389,7 @@ def process_audio(
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     config = load_config(args.config)
     instrument_configs = resolve_instrument_configs(config.audio_to_midi, args)
@@ -432,13 +442,20 @@ def main() -> None:
                 config.beat_detection.enabled,
             ):
                 skipped_count += 1
-                print(
-                    f"\n[Skip {index}/{len(unique_audio_files)}] Already completed: "
-                    f"{destination_dir}"
+                logger.info(
+                    "[Skip %d/%d] Already completed: %s",
+                    index,
+                    len(unique_audio_files),
+                    destination_dir,
                 )
                 continue
 
-            print(f"\n[Process {index}/{len(unique_audio_files)}] Processing: {source}")
+            logger.info(
+                "[Process %d/%d] Processing: %s",
+                index,
+                len(unique_audio_files),
+                source,
+            )
             try:
                 process_audio(
                     source,
@@ -451,17 +468,19 @@ def main() -> None:
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 failures.append((source, str(exc)))
-                print(f"Failed: {source}: {exc}", file=sys.stderr)
+                logger.error("Failed: %s: %s", source, exc)
             else:
                 processed_count += 1
-                print(f"Completed: {destination_dir}")
+                logger.info("Completed: %s", destination_dir)
 
     if failures:
         details = "\n".join(f"  {source}: {error}" for source, error in failures)
+        logger.error("%d of %d file(s) failed:\n%s", len(failures), len(audio_files), details)
         raise SystemExit(f"\n{len(failures)} of {len(audio_files)} file(s) failed:\n{details}")
-    print(
-        f"\nProcessed {processed_count} file(s); "
-        f"skipped {skipped_count} completed file(s)."
+    logger.info(
+        "Processed %d file(s); skipped %d completed file(s).",
+        processed_count,
+        skipped_count,
     )
 
 

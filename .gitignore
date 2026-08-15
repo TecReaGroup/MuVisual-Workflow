@@ -48,6 +48,8 @@ data/output/*
 !data/output/.gitkeep
 data/model/*
 !data/model/.gitkeep
+log/*
+!log/.gitkeep
 
 temp/
 

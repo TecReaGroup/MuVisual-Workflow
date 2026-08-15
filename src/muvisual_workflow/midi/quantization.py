@@ -6,12 +6,14 @@ import argparse
 import wave
 from pathlib import Path
 
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
 DEFAULT_AUDIO = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_quantized"
+logger = get_logger("quantization")
 
 
 def quantize_midi(
@@ -182,6 +184,7 @@ def quantize_midi(
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Quantize normalized MIDI files.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--audio", type=Path, default=DEFAULT_AUDIO)
@@ -204,9 +207,10 @@ def main() -> None:
             if audio_path.is_file()
             else audio_path / f"{input_path.stem}.wav"
         )
-        print(
-            f"Quantized: {input_path} -> "
-            f"{quantize_midi(input_path, destination, source_audio)}"
+        logger.info(
+            "Quantized: %s -> %s",
+            input_path,
+            quantize_midi(input_path, destination, source_audio),
         )
         return
 
@@ -219,9 +223,10 @@ def main() -> None:
     for source in files:
         destination = output_path / source.name
         source_audio = audio_path / f"{source.stem}.wav"
-        print(
-            f"Quantized: {source} -> "
-            f"{quantize_midi(source, destination, source_audio)}"
+        logger.info(
+            "Quantized: %s -> %s",
+            source,
+            quantize_midi(source, destination, source_audio),
         )
 
 

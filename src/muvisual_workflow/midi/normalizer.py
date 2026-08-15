@@ -21,11 +21,13 @@ try:
 except ImportError:
     mido = None  # type: ignore[assignment]
 
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_fixed"
 ALIGNMENT_SAMPLE_COUNT = 35
+logger = get_logger("normalizer")
 
 MAJOR_PROFILE = (6.35, 2.18, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
 MINOR_PROFILE = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
@@ -289,6 +291,7 @@ def normalize_file(source: Path, destination: Path) -> tuple[str, float, float, 
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Estimate MIDI key/BPM, write one tempo, and apply one global timing offset."
     )
@@ -308,13 +311,20 @@ def main() -> None:
         )
         negative_count = sample_count - positive_count
         average_error = alignment_error / sample_count if sample_count else 0.0
-        print(
-            f"{source.name}: key={key}, bpm={bpm:.2f}, "
-            f"delay={delay * 1000:.1f}ms, "
-            f"positive={positive_count}/{sample_count}, "
-            f"negative={negative_count}/{sample_count}, "
-            f"error={alignment_error * 1000:.1f}ms, "
-            f"average_error={average_error * 1000:.1f}ms -> {destination}"
+        logger.info(
+            "%s: key=%s, bpm=%.2f, delay=%.1fms, positive=%d/%d, "
+            "negative=%d/%d, error=%.1fms, average_error=%.1fms -> %s",
+            source.name,
+            key,
+            bpm,
+            delay * 1000,
+            positive_count,
+            sample_count,
+            negative_count,
+            sample_count,
+            alignment_error * 1000,
+            average_error * 1000,
+            destination,
         )
 
 

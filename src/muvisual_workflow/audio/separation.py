@@ -19,6 +19,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR
 
 USE_LOCAL_MODEL = True
@@ -29,6 +30,7 @@ DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"
 DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aiff", ".ac3"}
+logger = get_logger("separation")
 
 
 def _convert_m4a_to_wav(source: Path, destination: Path) -> None:
@@ -81,7 +83,7 @@ def _separator_input(input_path: Path) -> Iterator[Path | list[Path]]:
         converted: dict[Path, Path] = {}
         for index, source in enumerate(m4a_files):
             destination = temporary_root / str(index) / f"{source.stem}.wav"
-            print(f"Decoding M4A input: {source}")
+            logger.info("Decoding M4A input: %s", source)
             _convert_m4a_to_wav(source, destination)
             converted[source] = destination
 
@@ -115,7 +117,7 @@ def prepare_local_model() -> Path:
                 "Missing dependency huggingface-hub; run `uv sync` from the project root"
             ) from exc
 
-        print(f"Downloading local BS-Roformer model to: {model_dir}")
+        logger.info("Downloading local BS-Roformer model to: %s", model_dir)
         sync_bucket(
             LOCAL_MODEL_BUCKET,
             str(model_dir),
@@ -159,9 +161,9 @@ def create_separator(
 
     separator = Separator(**separator_kwargs)
     if model_dir:
-        print(f"Loading model from local directory: {model_dir / model}")
+        logger.info("Loading model from local directory: %s", model_dir / model)
     else:
-        print(f"Loading model from audio-separator registry: {model}")
+        logger.info("Loading model from audio-separator registry: %s", model)
     separator.load_model(model_filename=model)
     model_instance = separator.model_instance
     if output_single_stem is not None and hasattr(model_instance, "process_all_stems"):
@@ -189,7 +191,7 @@ def separate_with_loaded_model(separator: Any, input_path: Path, output_dir: Pat
     separator.output_dir = str(output_dir)
     separator.model_instance.output_dir = str(output_dir)
 
-    print(f"Separating {input_path} -> {output_dir}")
+    logger.info("Separating %s -> %s", input_path, output_dir)
     with _separator_input(input_path) as prepared_input:
         if isinstance(prepared_input, list):
             separator_input = [str(path) for path in prepared_input]
@@ -200,6 +202,7 @@ def separate_with_loaded_model(separator: Any, input_path: Path, output_dir: Pat
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     input_path = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
@@ -211,9 +214,9 @@ def main() -> None:
 
     separator = create_separator(output_dir, args.model)
     output_files = separate_with_loaded_model(separator, input_path, output_dir)
-    print(f"Done. Generated {len(output_files)} stem file(s):")
+    logger.info("Done. Generated %d stem file(s):", len(output_files))
     for output_file in output_files:
-        print(f"  {output_file}")
+        logger.info("Output: %s", output_file)
 
 
 if __name__ == "__main__":

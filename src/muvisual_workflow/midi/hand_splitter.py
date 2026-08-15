@@ -20,9 +20,11 @@ from pathlib import Path
 
 import mido
 
+from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR, PROJECT_ROOT
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
+logger = get_logger("hand_splitter")
 DEFAULT_OUTPUT = DATA_DIR / "midi_hand_split"
 PIANO_SVSEP_ROOT = Path(
     os.environ.get("PIANO_SVSEP_ROOT", str(PROJECT_ROOT / "piano_svsep"))
@@ -168,17 +170,18 @@ def process_file(source: Path, destination: Path, repo_root: Path, model: Path) 
     saved = mido.MidiFile(destination)
     after = channel_note_counts(saved)
     if DEBUG:
-        print(f"{source.name}: matched {len(hand_map)} note(s)")
-        print(f"  original channels: {before or 'none'}")
-        print(f"  saved channels:    {after or 'none'}")
+        logger.debug("%s: matched %d note(s)", source.name, len(hand_map))
+        logger.debug("Original channels: %s", before or "none")
+        logger.debug("Saved channels: %s", after or "none")
         for channel, count in after.items():
-            print(f"    MIDI channel {channel + 1}: {count} note(s)")
+            logger.debug("MIDI channel %d: %d note(s)", channel + 1, count)
         if sum(before.values()) != sum(after.values()):
-            print("  WARNING: note count changed during staff mapping")
-        print(f"  output: {destination}")
+            logger.warning("Note count changed during staff mapping")
+        logger.debug("Output: %s", destination)
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     files = sorted(args.input.glob("*.mid")) + sorted(args.input.glob("*.midi"))
     if not files:
