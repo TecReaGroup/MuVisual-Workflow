@@ -6,6 +6,7 @@
 → 仅对配置的乐器执行 noise gate
 → 仅对配置的乐器执行 Audio-to-MIDI 转录（其他的乐器文件夹只放入分离后的音频）
 → 对 midi 文件执行 normalizer
+→ 对 midi 文件执行 quantization
 
 ## File
 

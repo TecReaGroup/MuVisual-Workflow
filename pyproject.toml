@@ -27,6 +27,7 @@ dependencies = [
 [project.scripts]
 muvisual = "muvisual_workflow.workflow.pipeline:main"
 muvisual-fix-midi = "muvisual_workflow.midi.normalizer:main"
+muvisual-quantize-midi = "muvisual_workflow.midi.quantization:main"
 muvisual-gate = "muvisual_workflow.audio.noise_gate:main"
 muvisual-beats = "muvisual_workflow.audio.beat_detection:main"
 muvisual-separate = "muvisual_workflow.audio.separation:main"

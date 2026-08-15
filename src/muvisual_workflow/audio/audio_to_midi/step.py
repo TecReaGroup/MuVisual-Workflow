@@ -16,7 +16,6 @@ from typing import Protocol
 
 from muvisual_workflow.core.config import InstrumentAudioToMidiConfig, load_config
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
-from muvisual_workflow.midi.quantization import quantize_midi
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
@@ -88,7 +87,7 @@ class AudioToMidiResult:
 
 
 class AudioToMidiStep:
-    """Execute one configured audio-to-MIDI model and optional quantization."""
+    """Execute one configured audio-to-MIDI model."""
 
     def __init__(self, config: InstrumentAudioToMidiConfig) -> None:
         self.config = config
@@ -106,13 +105,8 @@ class AudioToMidiStep:
         if not output_path.is_file():
             raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
 
-        quantized = self.config.model == "transkun"
-        if quantized:
-            quantize_midi(output_path, output_path)
         print(f"Wrote: {output_path}")
-        if quantized:
-            print(f"Quantized in place: {output_path}")
-        return AudioToMidiResult(output_path, quantized)
+        return AudioToMidiResult(output_path, False)
 
     def release(self) -> None:
         """Release the loaded implementation model."""

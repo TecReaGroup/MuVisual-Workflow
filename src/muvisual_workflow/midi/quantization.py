@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+
+
+DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
+DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_quantized"
 
 
 def quantize_midi(source: Path, destination: Path | None = None) -> Path:
@@ -117,5 +124,40 @@ def quantize_midi(source: Path, destination: Path | None = None) -> Path:
         track.extend(rebuilt)
 
     output = destination or source.with_name(f"{source.stem}_quantized{source.suffix}")
+    output.parent.mkdir(parents=True, exist_ok=True)
     midi.save(output)
     return output
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Quantize normalized MIDI files.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+
+    input_path = args.input.expanduser().resolve()
+    output_path = args.output.expanduser().resolve()
+    if input_path.is_file():
+        if input_path.suffix.lower() not in {".mid", ".midi"}:
+            raise SystemExit(f"Input must be a MIDI file: {input_path}")
+        destination = (
+            output_path
+            if output_path.suffix.lower() in {".mid", ".midi"}
+            else output_path / input_path.name
+        )
+        print(f"Quantized: {input_path} -> {quantize_midi(input_path, destination)}")
+        return
+
+    if not input_path.is_dir():
+        raise SystemExit(f"Input MIDI path does not exist: {input_path}")
+
+    files = sorted(input_path.glob("*.mid")) + sorted(input_path.glob("*.midi"))
+    if not files:
+        raise SystemExit(f"No MIDI files found in {input_path}")
+    for source in files:
+        destination = output_path / source.name
+        print(f"Quantized: {source} -> {quantize_midi(source, destination)}")
+
+
+if __name__ == "__main__":
+    main()

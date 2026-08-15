@@ -29,6 +29,7 @@ from muvisual_workflow.core.config import (
 )
 from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
 from muvisual_workflow.midi.normalizer import normalize_file
+from muvisual_workflow.midi.quantization import quantize_midi
 
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
@@ -168,11 +169,12 @@ def resolve_instrument_configs(
 def expected_output_files(
     directory: Path,
     output_name: str,
+    original_suffix: str,
     stem_instruments: tuple[str, ...],
     midi_instruments: tuple[str, ...],
     beats_enabled: bool,
 ) -> tuple[Path, ...]:
-    files = [directory / f"{output_name}.mp3"]
+    files = [directory / f"{output_name}{original_suffix}"]
     if beats_enabled:
         files.append(directory / f"{output_name}_beat.json")
     for instrument in stem_instruments:
@@ -185,6 +187,7 @@ def expected_output_files(
 def output_is_complete(
     output_root: Path,
     output_name: str,
+    original_suffix: str,
     stem_instruments: tuple[str, ...] | None,
     midi_instruments: tuple[str, ...],
     beats_enabled: bool,
@@ -197,6 +200,7 @@ def output_is_complete(
         for path in expected_output_files(
             destination,
             output_name,
+            original_suffix,
             stem_instruments,
             midi_instruments,
             beats_enabled,
@@ -275,6 +279,8 @@ def process_instrument(
         f"Normalized MIDI: {midi_path} "
         f"(key={key}, bpm={bpm:.2f}, delay={delay * 1000:.1f}ms)"
     )
+    quantize_midi(midi_path, midi_path)
+    print(f"Quantized MIDI: {midi_path}")
 
 
 def write_stem_audio(
@@ -315,8 +321,9 @@ def process_audio(
     stem_dir = work_dir / "stems"
     result_dir = work_dir / "result"
     result_dir.mkdir(parents=True)
-    original_name = f"{output_name}.mp3"
-    convert_to_mp3(source, result_dir / original_name)
+    original_name = f"{output_name}{source.suffix.lower()}"
+    shutil.copy2(source, result_dir / original_name)
+    print(f"Copied original audio: {result_dir / original_name}")
 
     generate_beats(
         source,
@@ -358,6 +365,7 @@ def process_audio(
         for path in expected_output_files(
             result_dir,
             output_name,
+            source.suffix.lower(),
             tuple(stems),
             tuple(instrument_configs),
             beat_config.enabled,
@@ -423,6 +431,7 @@ def main() -> None:
             if output_is_complete(
                 output_dir,
                 output_name,
+                source.suffix.lower(),
                 stem_instruments,
                 midi_instruments,
                 config.beat_detection.enabled,
