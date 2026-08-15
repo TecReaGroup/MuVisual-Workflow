@@ -4,60 +4,10 @@ from __future__ import annotations
 
 import io
 import sys
-import wave
 from contextlib import redirect_stdout
-from contextvars import ContextVar
 from pathlib import Path
 from typing import TextIO
 
-_UNFINISHED_NOTE_DURATION_SECONDS = 5.0
-_audio_duration_seconds: ContextVar[float | None] = ContextVar(
-    "muscriptor_audio_duration_seconds",
-    default=None,
-)
-
-
-def _install_open_note_finish_patch() -> None:
-    from muscriptor.events import OpenNoteTracker, _EndNote, _NoteAction
-    from muscriptor.tokenizer.notes import MINIMUM_NOTE_DURATION_SEC
-
-    if getattr(OpenNoteTracker.finish, "_muvisual_patched", False):
-        return
-
-    original_finish = OpenNoteTracker.finish
-
-    def finish_with_audio_end(self: OpenNoteTracker) -> list[_NoteAction]:
-        audio_duration = _audio_duration_seconds.get()
-        if audio_duration is None:
-            return original_finish(self)
-
-        # Preserve MuScriptor's handling of a malformed final chunk.
-        if self._chunk_started and self._in_prologue:
-            return self._end_all(self._seek_time)
-
-        actions: list[_NoteAction] = [
-            _EndNote(
-                *key,
-                max(
-                    onset + MINIMUM_NOTE_DURATION_SEC,
-                    min(onset + _UNFINISHED_NOTE_DURATION_SECONDS, audio_duration),
-                ),
-            )
-            for key, onset in self._open.items()
-        ]
-        self._open.clear()
-        return actions
-
-    finish_with_audio_end._muvisual_patched = True
-    OpenNoteTracker.finish = finish_with_audio_end
-
-
-def _wav_duration_seconds(path: Path) -> float:
-    with wave.open(str(path), "rb") as audio:
-        frame_rate = audio.getframerate()
-        if frame_rate <= 0:
-            raise RuntimeError(f"Invalid WAV sample rate: {path}")
-        return audio.getnframes() / frame_rate
 
 
 class _MuscriptorOutputFilter(io.TextIOBase):
@@ -98,7 +48,6 @@ class MuscriptorModel:
         except ImportError as exc:
             raise RuntimeError("MuScriptor is not installed; run `uv sync`") from exc
 
-        _install_open_note_finish_patch()
 
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -114,13 +63,9 @@ class MuscriptorModel:
 
     def transcribe(self, input_path: Path, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        duration_token = _audio_duration_seconds.set(_wav_duration_seconds(input_path))
-        try:
-            with redirect_stdout(_MuscriptorOutputFilter(sys.stdout)):
-                midi_bytes = self.model.transcribe_to_midi(
-                    input_path,
-                    instruments=self.instruments,
-                )
-        finally:
-            _audio_duration_seconds.reset(duration_token)
+        with redirect_stdout(_MuscriptorOutputFilter(sys.stdout)):
+            midi_bytes = self.model.transcribe_to_midi(
+                input_path,
+                instruments=self.instruments,
+            )
         output_path.write_bytes(midi_bytes)
