@@ -279,7 +279,7 @@ def process_instrument(
         f"Normalized MIDI: {midi_path} "
         f"(key={key}, bpm={bpm:.2f}, delay={delay * 1000:.1f}ms)"
     )
-    quantize_midi(midi_path, midi_path)
+    quantize_midi(midi_path, midi_path, gated_path)
     print(f"Quantized MIDI: {midi_path}")
 
 

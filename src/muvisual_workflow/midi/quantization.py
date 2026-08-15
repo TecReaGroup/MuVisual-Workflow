@@ -3,22 +3,51 @@
 from __future__ import annotations
 
 import argparse
+import wave
 from pathlib import Path
 
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
+DEFAULT_AUDIO = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_quantized"
 
 
-def quantize_midi(source: Path, destination: Path | None = None) -> Path:
+def quantize_midi(
+    source: Path,
+    destination: Path | None = None,
+    audio_path: Path | None = None,
+) -> Path:
     try:
         import mido
     except ImportError as exc:
         raise RuntimeError("Mido is not installed; run `uv sync`") from exc
 
+    if audio_path is None:
+        raise RuntimeError("Quantization requires the corresponding audio file")
+    try:
+        with wave.open(str(audio_path), "rb") as audio:
+            frame_rate = audio.getframerate()
+            if frame_rate <= 0:
+                raise RuntimeError(f"Invalid WAV sample rate: {audio_path}")
+            audio_duration_seconds = audio.getnframes() / frame_rate
+    except (OSError, wave.Error) as exc:
+        raise RuntimeError(f"Could not read WAV duration: {audio_path}: {exc}") from exc
+
     midi = mido.MidiFile(source)
+    tempo = next(
+        (
+            message.tempo
+            for track in midi.tracks
+            for message in track
+            if message.type == "set_tempo"
+        ),
+        500_000,
+    )
+    audio_end_tick = round(
+        mido.second2tick(audio_duration_seconds, midi.ticks_per_beat, tempo)
+    )
     c4_note = 60
     time_threshold = 100
 
@@ -65,29 +94,52 @@ def quantize_midi(source: Path, destination: Path | None = None) -> Path:
                     simultaneous.append(hand_notes[next_index])
                     next_index += 1
 
-                if next_index < len(hand_notes):
-                    next_time = hand_notes[next_index]["time"]
-                    for note in simultaneous:
-                        best_off = None
-                        best_distance = float("inf")
-                        for off in notes_off:
-                            if (
-                                off["note"] == note["note"]
-                                and off["channel"] == note["channel"]
-                                and off["time"] > note["time"]
-                                and not off.get("processed", False)
-                            ):
-                                distance = off["time"] - note["time"]
-                                if distance < best_distance:
-                                    best_distance = distance
-                                    best_off = off
-                        if best_off is not None:
-                            best_off["time"] = max(note["time"] + 100, next_time - 10)
-                            best_off["processed"] = True
+                is_last_group = next_index >= len(hand_notes)
+                next_time = (
+                    None if is_last_group else hand_notes[next_index]["time"]
+                )
+                for note in simultaneous:
+                    if is_last_group and note["time"] >= audio_end_tick:
+                        raise RuntimeError(
+                            f"Final MIDI note starts at or after the audio end: {source}"
+                        )
+                    target_end = (
+                        audio_end_tick
+                        if is_last_group
+                        else max(note["time"] + 100, next_time - 10)
+                    )
+                    best_off = None
+                    best_distance = float("inf")
+                    for off in notes_off:
+                        if (
+                            off["note"] == note["note"]
+                            and off["channel"] == note["channel"]
+                            and off["time"] > note["time"]
+                            and not off.get("processed", False)
+                        ):
+                            distance = off["time"] - note["time"]
+                            if distance < best_distance:
+                                best_distance = distance
+                                best_off = off
+                    if best_off is None:
+                        best_off = {
+                            "time": target_end,
+                            "note": note["note"],
+                            "velocity": 0,
+                            "channel": note["channel"],
+                        }
+                        notes_off.append(best_off)
+                    else:
+                        best_off["time"] = target_end
+                    best_off["processed"] = True
                 index = next_index
 
         process_hand_notes([note for note in notes_on if note["note"] <= c4_note])
         process_hand_notes([note for note in notes_on if note["note"] > c4_note])
+
+        for event in other_events:
+            if event["msg"].type == "end_of_track":
+                event["time"] = audio_end_tick
 
         all_events = (
             [("note_on", note["time"], note) for note in notes_on]
@@ -132,10 +184,12 @@ def quantize_midi(source: Path, destination: Path | None = None) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Quantize normalized MIDI files.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--audio", type=Path, default=DEFAULT_AUDIO)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
 
     input_path = args.input.expanduser().resolve()
+    audio_path = args.audio.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     if input_path.is_file():
         if input_path.suffix.lower() not in {".mid", ".midi"}:
@@ -145,7 +199,15 @@ def main() -> None:
             if output_path.suffix.lower() in {".mid", ".midi"}
             else output_path / input_path.name
         )
-        print(f"Quantized: {input_path} -> {quantize_midi(input_path, destination)}")
+        source_audio = (
+            audio_path
+            if audio_path.is_file()
+            else audio_path / f"{input_path.stem}.wav"
+        )
+        print(
+            f"Quantized: {input_path} -> "
+            f"{quantize_midi(input_path, destination, source_audio)}"
+        )
         return
 
     if not input_path.is_dir():
@@ -156,7 +218,11 @@ def main() -> None:
         raise SystemExit(f"No MIDI files found in {input_path}")
     for source in files:
         destination = output_path / source.name
-        print(f"Quantized: {source} -> {quantize_midi(source, destination)}")
+        source_audio = audio_path / f"{source.stem}.wav"
+        print(
+            f"Quantized: {source} -> "
+            f"{quantize_midi(source, destination, source_audio)}"
+        )
 
 
 if __name__ == "__main__":
