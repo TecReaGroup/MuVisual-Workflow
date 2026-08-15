@@ -169,12 +169,11 @@ def resolve_instrument_configs(
 def expected_output_files(
     directory: Path,
     output_name: str,
-    original_suffix: str,
     stem_instruments: tuple[str, ...],
     midi_instruments: tuple[str, ...],
     beats_enabled: bool,
 ) -> tuple[Path, ...]:
-    files = [directory / f"{output_name}{original_suffix}"]
+    files = [directory / f"{output_name}.mp3"]
     if beats_enabled:
         files.append(directory / f"{output_name}_beat.json")
     for instrument in stem_instruments:
@@ -187,7 +186,6 @@ def expected_output_files(
 def output_is_complete(
     output_root: Path,
     output_name: str,
-    original_suffix: str,
     stem_instruments: tuple[str, ...] | None,
     midi_instruments: tuple[str, ...],
     beats_enabled: bool,
@@ -200,7 +198,6 @@ def output_is_complete(
         for path in expected_output_files(
             destination,
             output_name,
-            original_suffix,
             stem_instruments,
             midi_instruments,
             beats_enabled,
@@ -321,9 +318,9 @@ def process_audio(
     stem_dir = work_dir / "stems"
     result_dir = work_dir / "result"
     result_dir.mkdir(parents=True)
-    original_name = f"{output_name}{source.suffix.lower()}"
-    shutil.copy2(source, result_dir / original_name)
-    print(f"Copied original audio: {result_dir / original_name}")
+    original_name = f"{output_name}.mp3"
+    convert_to_mp3(source, result_dir / original_name)
+    print(f"Stored original audio: {result_dir / original_name}")
 
     generate_beats(
         source,
@@ -365,7 +362,6 @@ def process_audio(
         for path in expected_output_files(
             result_dir,
             output_name,
-            source.suffix.lower(),
             tuple(stems),
             tuple(instrument_configs),
             beat_config.enabled,
@@ -431,7 +427,6 @@ def main() -> None:
             if output_is_complete(
                 output_dir,
                 output_name,
-                source.suffix.lower(),
                 stem_instruments,
                 midi_instruments,
                 config.beat_detection.enabled,
