@@ -1,7 +1,16 @@
 UV ?= uv
+VPS_SYNC_DIR ?= vps-sync
+
+.PHONY: push pull
 
 install:
 	$(UV) sync
+
+push:
+	$(MAKE) -C $(VPS_SYNC_DIR) upload
+
+pull:
+	$(MAKE) -C $(VPS_SYNC_DIR) download
 
 hf:
 	$(UV) hf auth login

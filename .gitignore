@@ -44,6 +44,8 @@ data/develop/midi_fixed/*
 !data/develop/midi_fixed/.gitkeep
 data/develop/beats/*
 !data/develop/beats/.gitkeep
+data/input/*
+!data/input/.gitkeep
 data/output/*
 !data/output/.gitkeep
 data/model/*
@@ -52,6 +54,7 @@ log/*
 !log/.gitkeep
 
 temp/
+vps-sync/
 
 *.mid
 *.mp3
