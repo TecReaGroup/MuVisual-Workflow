@@ -19,6 +19,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
+from muvisual_workflow.core.config import load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR
 
@@ -28,7 +29,6 @@ LOCAL_MODEL_BUCKET = "hf://buckets/Trgroup/BS-Roformer-SW"
 LOCAL_MODEL_FILES = ("BS-Roformer-SW.ckpt", "BS-Roformer-SW.yaml")
 DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
 DEFAULT_OUTPUT_DIR = DEVELOP_DATA_DIR / "stem"
-DEFAULT_MODEL = "BS-Roformer-SW.ckpt"
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aiff", ".ac3"}
 logger = get_logger("separation")
 
@@ -99,8 +99,10 @@ def parse_args() -> argparse.Namespace:
                         help=f"Input file or directory (default: {DEFAULT_INPUT_DIR})")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
-    parser.add_argument("--model", default=DEFAULT_MODEL,
-                        help=f"BS-Roformer SW checkpoint filename (default: {DEFAULT_MODEL})")
+    parser.add_argument("--model", default=None,
+                        help="Override the separation model selected by workflow.yaml")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Workflow YAML file (default: config/workflow.yaml)")
     return parser.parse_args()
 
 
@@ -204,6 +206,7 @@ def separate_with_loaded_model(separator: Any, input_path: Path, output_dir: Pat
 def main() -> None:
     configure_logging()
     args = parse_args()
+    config = load_config(args.config).require_separation()
     input_path = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
 
@@ -212,7 +215,7 @@ def main() -> None:
     if input_path.is_dir() and not any(input_path.rglob("*")):
         raise SystemExit(f"Input directory is empty: {input_path}")
 
-    separator = create_separator(output_dir, args.model)
+    separator = create_separator(output_dir, args.model or config.model)
     output_files = separate_with_loaded_model(separator, input_path, output_dir)
     logger.info("Done. Generated %d stem file(s):", len(output_files))
     for output_file in output_files:

@@ -17,6 +17,7 @@ dependencies = [
     "mutagen",
     "numpy",
     "partitura",
+    "pyyaml",
     "scipy",
     "soxr",
     "torch==2.11.0",
@@ -26,13 +27,13 @@ dependencies = [
 
 [project.scripts]
 muvisual = "muvisual_workflow.workflow.pipeline:main"
-muvisual-fix-midi = "muvisual_workflow.midi.normalizer:main"
-muvisual-quantize-midi = "muvisual_workflow.midi.quantization:main"
-muvisual-gate = "muvisual_workflow.audio.noise_gate:main"
-muvisual-beats = "muvisual_workflow.audio.beat_detection:main"
-muvisual-separate = "muvisual_workflow.audio.separation:main"
-muvisual-split-midi = "muvisual_workflow.midi.hand_splitter:main"
-muvisual-transcribe = "muvisual_workflow.audio.audio_to_midi:main"
+muvisual-fix-midi = "muvisual_workflow.audio_to_midi.normalizer:main"
+muvisual-quantize-midi = "muvisual_workflow.audio_to_midi.quantization:main"
+muvisual-gate = "muvisual_workflow.audio_to_midi.noise_gate:main"
+muvisual-beats = "muvisual_workflow.beat_detection:main"
+muvisual-separate = "muvisual_workflow.separation:main"
+muvisual-split-midi = "muvisual_workflow.tools.hand_splitter:main"
+muvisual-transcribe = "muvisual_workflow.audio_to_midi:main"
 
 [build-system]
 requires = ["uv_build>=0.11.6,<0.12.0"]

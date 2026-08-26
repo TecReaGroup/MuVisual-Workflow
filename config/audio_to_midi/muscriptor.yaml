@@ -1,0 +1,16 @@
+default_instrument: piano
+device: auto
+dtype: auto
+
+instruments:
+  piano:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - acoustic_piano
+
+  other:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - string_ensemble

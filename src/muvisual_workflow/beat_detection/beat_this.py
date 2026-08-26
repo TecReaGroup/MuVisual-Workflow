@@ -460,7 +460,7 @@ def main() -> int:
     parser.add_argument("--enabled", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args()
-    config = load_config(args.config).beat_detection
+    config = load_config(args.config).require_beat_detection()
     enabled = config.enabled if args.enabled is None else args.enabled
     if not enabled:
         logger.info("Beat detection is disabled by configuration")

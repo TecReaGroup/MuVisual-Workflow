@@ -1,0 +1,4 @@
+enabled: true
+model: final0
+device: auto
+dbn: true

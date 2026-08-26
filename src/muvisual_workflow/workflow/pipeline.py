@@ -12,11 +12,11 @@ from tempfile import TemporaryDirectory
 
 import mutagen
 
-from muvisual_workflow.audio.audio_to_midi import AudioToMidiStep
-from muvisual_workflow.audio.beat_detection import BeatDetector, write_result
-from muvisual_workflow.audio.conversion import convert_to_mp3
-from muvisual_workflow.audio.noise_gate import gate_file
-from muvisual_workflow.audio.separation import (
+from muvisual_workflow.audio_to_midi import AudioToMidiStep
+from muvisual_workflow.beat_detection import BeatDetector, write_result
+from muvisual_workflow.core.audio_conversion import convert_to_mp3
+from muvisual_workflow.audio_to_midi.noise_gate import gate_file
+from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
     create_separator,
     separate_with_loaded_model,
@@ -25,12 +25,13 @@ from muvisual_workflow.core.config import (
     AudioToMidiConfig,
     BeatDetectionConfig,
     InstrumentAudioToMidiConfig,
+    MuVisualConfig,
     load_config,
 )
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
-from muvisual_workflow.midi.normalizer import normalize_file
-from muvisual_workflow.midi.quantization import quantize_midi
+from muvisual_workflow.audio_to_midi.normalizer import normalize_file
+from muvisual_workflow.audio_to_midi.quantization import quantize_midi
 
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
@@ -70,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="TOML configuration file (default: config/muvisual.toml)",
+        help="Workflow YAML file (default: config/workflow.yaml)",
     )
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
@@ -315,9 +316,7 @@ def process_audio(
     output_name: str,
     output_dir: Path,
     work_dir: Path,
-    separation_model: str,
-    instrument_configs: dict[str, InstrumentAudioToMidiConfig],
-    beat_config: BeatDetectionConfig,
+    config: MuVisualConfig,
 ) -> None:
     destination_dir = output_dir / output_name
     stem_dir = work_dir / "stems"
@@ -327,44 +326,75 @@ def process_audio(
     convert_to_mp3(source, result_dir / original_name)
     logger.info("Stored original audio: %s", result_dir / original_name)
 
-    generate_beats(
-        source,
-        result_dir / f"{output_name}_beat.json",
-        beat_config,
-        original_name,
+    stems: dict[str, Path] = {}
+    instrument_configs = (
+        config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
     )
+    beats_enabled = False
 
-    separator = create_separator(stem_dir, separation_model)
-    try:
-        output_files = separate_with_loaded_model(separator, source, stem_dir)
+    for workflow_step in config.workflow:
         logger.info(
-            "Generated %d stem file(s): %s",
-            len(output_files),
-            ", ".join(output_files),
+            "Running workflow step %s with option %s",
+            workflow_step.name,
+            workflow_step.option,
         )
-    finally:
-        release_separator(separator)
+        if workflow_step.name == "beat_detection":
+            beat_config = config.require_beat_detection()
+            beats_enabled = beat_config.enabled
+            generate_beats(
+                source,
+                result_dir / f"{output_name}_beat.json",
+                beat_config,
+                original_name,
+            )
+            continue
 
-    stems = discover_instrument_stems(stem_dir)
-    missing_configured_stems = sorted(set(instrument_configs) - set(stems))
-    if missing_configured_stems:
-        raise RuntimeError(
-            "Configured instruments were not produced by separation: "
-            + ", ".join(missing_configured_stems)
-        )
+        if workflow_step.name == "separation":
+            separation_config = config.require_separation()
+            separator = create_separator(stem_dir, separation_config.model)
+            try:
+                output_files = separate_with_loaded_model(separator, source, stem_dir)
+                logger.info(
+                    "Generated %d stem file(s): %s",
+                    len(output_files),
+                    ", ".join(output_files),
+                )
+            finally:
+                release_separator(separator)
+            stems = discover_instrument_stems(stem_dir)
+            continue
 
-    for instrument, stem_path in stems.items():
-        instrument_config = instrument_configs.get(instrument)
-        if instrument_config is not None:
-            logger.info("Processing configured instrument: %s", instrument)
-        write_stem_audio(
-            instrument,
-            stem_path,
-            result_dir,
-            work_dir,
-            output_name,
-            instrument_config,
-        )
+        if not stems:
+            raise RuntimeError("audio_to_midi requires separation output")
+        missing_configured_stems = sorted(set(instrument_configs) - set(stems))
+        if missing_configured_stems:
+            raise RuntimeError(
+                "Configured instruments were not produced by separation: "
+                + ", ".join(missing_configured_stems)
+            )
+        for instrument, stem_path in stems.items():
+            instrument_config = instrument_configs.get(instrument)
+            if instrument_config is not None:
+                logger.info("Processing configured instrument: %s", instrument)
+            write_stem_audio(
+                instrument,
+                stem_path,
+                result_dir,
+                work_dir,
+                output_name,
+                instrument_config,
+            )
+
+    if stems and config.audio_to_midi is None:
+        for instrument, stem_path in stems.items():
+            write_stem_audio(
+                instrument,
+                stem_path,
+                result_dir,
+                work_dir,
+                output_name,
+                None,
+            )
 
     missing = [
         path
@@ -373,7 +403,7 @@ def process_audio(
             output_name,
             tuple(stems),
             tuple(instrument_configs),
-            beat_config.enabled,
+            beats_enabled,
         )
         if not path.is_file()
     ]
@@ -388,13 +418,45 @@ def process_audio(
     result_dir.replace(destination_dir)
 
 
+def resolve_runtime_config(
+    config: MuVisualConfig,
+    args: argparse.Namespace,
+) -> MuVisualConfig:
+    separation = config.separation
+    if args.model is not None:
+        if separation is None:
+            raise ValueError("--separation-model requires a configured separation step")
+        separation = replace(separation, model=args.model)
+
+    audio_to_midi = config.audio_to_midi
+    audio_overridden = any(
+        value is not None
+        for value in (
+            args.audio_to_midi_model,
+            args.audio_to_midi_checkpoint,
+            args.device,
+            args.segment_hop_size,
+            args.segment_size,
+        )
+    )
+    if audio_overridden and audio_to_midi is None:
+        raise ValueError("Audio-to-MIDI overrides require a configured audio_to_midi step")
+    if audio_to_midi is not None:
+        audio_to_midi = replace(
+            audio_to_midi,
+            instruments=resolve_instrument_configs(audio_to_midi, args),
+        )
+    return replace(config, separation=separation, audio_to_midi=audio_to_midi)
+
+
 def main() -> None:
     configure_logging()
     args = parse_args()
-    config = load_config(args.config)
-    instrument_configs = resolve_instrument_configs(config.audio_to_midi, args)
-
-    separation_model = args.model or config.separation_model
+    config = resolve_runtime_config(load_config(args.config), args)
+    instrument_configs = (
+        config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
+    )
+    separation_model = config.separation.model if config.separation is not None else None
     input_dir = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
     if not input_dir.is_dir():
@@ -426,8 +488,13 @@ def main() -> None:
         else:
             unique_audio_files.append((source, output_name))
 
-    stem_instruments = expected_model_stems(separation_model)
+    stem_instruments = (
+        expected_model_stems(separation_model) if separation_model is not None else ()
+    )
     midi_instruments = tuple(instrument_configs)
+    beats_enabled = (
+        config.beat_detection.enabled if config.beat_detection is not None else False
+    )
     processed_count = 0
     skipped_count = 0
     with TemporaryDirectory(prefix="muvisual-batch-", dir=TEMP_DIR) as temporary_dir:
@@ -439,7 +506,7 @@ def main() -> None:
                 output_name,
                 stem_instruments,
                 midi_instruments,
-                config.beat_detection.enabled,
+                beats_enabled,
             ):
                 skipped_count += 1
                 logger.info(
@@ -462,9 +529,7 @@ def main() -> None:
                     output_name,
                     output_dir,
                     batch_work_dir / str(index),
-                    separation_model,
-                    instrument_configs,
-                    config.beat_detection,
+                    config,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 failures.append((source, str(exc)))

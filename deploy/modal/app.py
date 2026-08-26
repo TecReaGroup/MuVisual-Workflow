@@ -75,25 +75,39 @@ def _zip_directory(directory: Path) -> bytes:
 )
 def warmup_models() -> None:
     """Download all runtime model weights into the shared Volume once."""
-    from muvisual_workflow.audio.beat_detection import BeatDetector
-    from muvisual_workflow.audio.audio_to_midi.muscriptor import MuscriptorModel
-    from muvisual_workflow.audio.separation import prepare_local_model
+    from dataclasses import replace
 
-    prepare_local_model()
+    from muvisual_workflow.audio_to_midi import AudioToMidiStep
+    from muvisual_workflow.beat_detection import BeatDetector
+    from muvisual_workflow.separation import prepare_local_model
+    from muvisual_workflow.core.config import load_config
 
-    beat_detector = BeatDetector("final0", device="cpu", dbn=False)
-    beat_detector.release()
+    config = load_config()
+    warmed: list[str] = []
 
-    muscriptor_model = MuscriptorModel(
-        model_name="medium",
-        device="cpu",
-        dtype="float32",
-        instruments=("acoustic_piano",),
-    )
-    muscriptor_model.model = None
+    if config.separation is not None:
+        prepare_local_model()
+        warmed.append(config.separation.model)
+
+    if config.beat_detection is not None and config.beat_detection.enabled:
+        beat_config = config.beat_detection
+        beat_detector = BeatDetector(beat_config.model, device="cpu", dbn=beat_config.dbn)
+        beat_detector.release()
+        warmed.append(beat_config.model)
+
+    if config.audio_to_midi is not None:
+        for instrument, instrument_config in config.audio_to_midi.instruments.items():
+            cpu_config = replace(
+                instrument_config,
+                device="cpu",
+                dtype="float32" if instrument_config.model == "muscriptor" else None,
+            )
+            step = AudioToMidiStep(cpu_config)
+            step.release()
+            warmed.append(f"{instrument_config.model}:{instrument}")
 
     model_cache.commit()
-    print("Model warmup complete: BS-Roformer-SW, Beat This, MuScriptor")
+    print("Model warmup complete: " + ", ".join(warmed))
 
 
 @app.function(
@@ -112,7 +126,7 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
         TEMP_DIR,
         process_audio as run_pipeline,
         read_output_name,
-        resolve_instrument_configs,
+        resolve_runtime_config,
     )
 
     if suffix not in SUPPORTED_EXTENSIONS:
@@ -120,7 +134,7 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     if not payload:
         raise ValueError("Audio file is empty")
 
-    config = load_config()
+    config = resolve_runtime_config(load_config(), _ApiArgs())
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="muvisual-api-", dir=TEMP_DIR) as temp_dir:
         work_root = Path(temp_dir)
@@ -134,9 +148,7 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
             output_name,
             output_root,
             work_root / "work",
-            config.separation_model,
-            resolve_instrument_configs(config.audio_to_midi, _ApiArgs()),
-            config.beat_detection,
+            config,
         )
         archive = _zip_directory(output_root / output_name)
     return output_name, archive

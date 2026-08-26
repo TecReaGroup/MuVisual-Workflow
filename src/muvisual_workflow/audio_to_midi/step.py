@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
 def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMidiModel:
     """Construct the selected model implementation for this workflow step."""
     if config.model == "muscriptor":
-        from muvisual_workflow.audio.audio_to_midi.muscriptor import MuscriptorModel
+        from muvisual_workflow.audio_to_midi.muscriptor import MuscriptorModel
 
         return MuscriptorModel(
             model_name=config.checkpoint,
@@ -72,7 +72,7 @@ def create_audio_to_midi_model(config: InstrumentAudioToMidiConfig) -> AudioToMi
             dtype=config.dtype,
             instruments=config.target_instruments,
         )
-    from muvisual_workflow.audio.audio_to_midi.transkun import TranskunModel
+    from muvisual_workflow.audio_to_midi.transkun import TranskunModel
 
     return TranskunModel(
         checkpoint=config.checkpoint,
@@ -128,7 +128,7 @@ def detect_instrument(audio_path: Path) -> str | None:
 def main() -> None:
     configure_logging()
     args = parse_args()
-    configured = load_config(args.config).audio_to_midi
+    configured = load_config(args.config).require_audio_to_midi()
     input_path = args.input.expanduser().resolve()
     configured_output = args.output.expanduser().resolve()
 

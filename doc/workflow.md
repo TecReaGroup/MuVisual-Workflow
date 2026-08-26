@@ -2,11 +2,10 @@
 
 读取音频标签，复制原始音频
 → 对整首歌运行一次 Beat This
-→ 分离所有 stems
-→ 仅对配置的乐器执行 noise gate
+→ 分离所有 stems，并且执行 noise gate
 → 仅对配置的乐器执行 Audio-to-MIDI 转录（其他的乐器文件夹只放入分离后的音频）
 → 对 midi 文件执行 normalizer
-→ 对 midi 文件执行 quantization
+→ 对 midi 文件执行量化 quantization
 
 ## File
 

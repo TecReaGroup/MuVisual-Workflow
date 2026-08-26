@@ -10,3 +10,5 @@
 │       ├── option_name.yaml
 │       └── option_name.yaml
 ```
+
+- 支持懒加载，对于执行到的步骤，才会下载对应的模型文件

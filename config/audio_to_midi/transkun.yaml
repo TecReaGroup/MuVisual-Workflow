@@ -1,0 +1,10 @@
+default_instrument: piano
+device: auto
+dtype: auto
+
+instruments:
+  piano:
+    model: transkun
+    checkpoint: "2.0"
+    target_instruments:
+      - piano
