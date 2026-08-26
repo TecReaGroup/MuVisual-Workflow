@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 import mutagen
 
 from muvisual_workflow.audio_to_midi import AudioToMidiStep
-from muvisual_workflow.beat_detection import BeatDetector
+from muvisual_workflow.beat_detection import BeatDetector, MadmomBeatDetector
 from muvisual_workflow.core.audio_conversion import convert_to_mp3
 from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
@@ -33,6 +33,7 @@ from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
 from muvisual_workflow.midi_quantization import quantize_midi
 from muvisual_workflow.music_metadata import (
     analyze_file,
+    recognize_chords,
     update_song_metadata,
 )
 
@@ -233,7 +234,7 @@ def release_audio_to_midi_step(step: AudioToMidiStep) -> None:
     clear_cuda_cache()
 
 
-def release_beat_detector(detector: BeatDetector) -> None:
+def release_beat_detector(detector: BeatDetector | MadmomBeatDetector) -> None:
     model = getattr(detector, "detector", None)
     detector.release()
     del model
@@ -245,18 +246,46 @@ def generate_beats(
     destination: Path,
     config: BeatDetectionConfig,
     audio_reference: str,
-) -> None:
+) -> list[float]:
     if not config.enabled:
-        return
+        return []
+
+    if config.algorithm == "madmom":
+        detector = MadmomBeatDetector(config.minimum_bpm, config.maximum_bpm)
+        try:
+            result = detector.detect_result(source)
+            update_song_metadata(
+                destination,
+                audio=audio_reference,
+                beats=result.beats,
+                downbeats=result.downbeats,
+                beat_metadata={
+                    "algorithm": "madmom",
+                    "model": result.model,
+                    "bpm": result.bpm,
+                    "raw_bpm": result.raw_bpm,
+                    "doubled_bpm": result.doubled_bpm,
+                },
+            )
+            return result.beats
+        finally:
+            release_beat_detector(detector)
+
     detector = BeatDetector(config.model, config.device, config.dbn)
     try:
-        beats, downbeats = detector.detect(source)
+        detected_beats, downbeats = detector.detect(source)
+        beats = [float(value) for value in detected_beats]
         update_song_metadata(
             destination,
             audio=audio_reference,
-            beats=[float(value) for value in beats],
+            beats=beats,
             downbeats=[float(value) for value in downbeats],
+            beat_metadata={
+                "algorithm": "beat_this",
+                "model": config.model,
+            },
         )
+        return beats
     finally:
         release_beat_detector(detector)
 
@@ -323,6 +352,7 @@ def process_audio(
     )
     metadata_path = result_dir / f"{output_name}_meta.json"
     metadata_enabled = False
+    detected_beats: list[float] = []
 
     for workflow_step in config.workflow:
         logger.info(
@@ -333,7 +363,7 @@ def process_audio(
         if workflow_step.name == "beat_detection":
             beat_config = config.require_beat_detection()
             metadata_enabled = beat_config.enabled
-            generate_beats(
+            detected_beats = generate_beats(
                 source,
                 metadata_path,
                 beat_config,
@@ -395,28 +425,56 @@ def process_audio(
             continue
 
         if workflow_step.name == "music_metadata":
-            if not midi_files:
-                raise RuntimeError("music_metadata requires audio_to_midi output")
             metadata_config = config.require_music_metadata()
-            metadata_enabled = True
-            for instrument, midi_path in midi_files.items():
-                metadata = analyze_file(
-                    midi_path,
-                    metadata_config.alignment_sample_count,
+            metadata_enabled = metadata_config.enabled
+            if not metadata_config.enabled:
+                continue
+
+            if metadata_config.chord_recognition.enabled:
+                if not detected_beats:
+                    raise RuntimeError(
+                        "music_metadata chord recognition requires enabled "
+                        "beat_detection output"
+                    )
+                chord_payload = recognize_chords(
+                    source,
+                    detected_beats,
+                    metadata_config.chord_recognition,
                 )
                 update_song_metadata(
                     metadata_path,
                     audio=original_name,
-                    instrument=instrument,
-                    instrument_metadata=metadata,
+                    chords=chord_payload,
                 )
                 logger.info(
-                    "Recognized music metadata for %s: key=%s, bpm=%.2f, delay=%.1f ms",
-                    instrument,
-                    metadata.key,
-                    metadata.bpm,
-                    metadata.delay * 1000,
+                    "Recognized %d chord segment(s) with Chord-CNN-LSTM",
+                    len(chord_payload["segments"]),
                 )
+
+            if metadata_config.key_bpm_delay.enabled:
+                if not midi_files:
+                    raise RuntimeError(
+                        "music_metadata key_bpm_delay requires audio_to_midi output"
+                    )
+                for instrument, midi_path in midi_files.items():
+                    metadata = analyze_file(
+                        midi_path,
+                        metadata_config.key_bpm_delay.alignment_sample_count,
+                    )
+                    update_song_metadata(
+                        metadata_path,
+                        audio=original_name,
+                        instrument=instrument,
+                        instrument_metadata=metadata,
+                    )
+                    logger.info(
+                        "Recognized music metadata for %s: "
+                        "key=%s, bpm=%.2f, delay=%.1f ms",
+                        instrument,
+                        metadata.key,
+                        metadata.bpm,
+                        metadata.delay * 1000,
+                    )
             continue
         if workflow_step.name == "midi_quantization":
             if not midi_files:
@@ -534,7 +592,11 @@ def main() -> None:
         expected_model_stems(separation_model) if separation_model is not None else ()
     )
     midi_instruments = tuple(instrument_configs)
-    metadata_enabled = config.has_step("music_metadata") or (
+    metadata_enabled = (
+        config.music_metadata.enabled
+        if config.music_metadata is not None
+        else False
+    ) or (
         config.beat_detection.enabled if config.beat_detection is not None else False
     )
     processed_count = 0

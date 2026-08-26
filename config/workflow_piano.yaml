@@ -3,12 +3,12 @@ instrument: piano
 
 workflow:
   - step: beat_detection
-    option: beat_this
+    option: madmom
   - step: separation
     option: bs_roformer_sw
   - step: audio_to_midi
     option: muscriptor_piano
   - step: music_metadata
-    option: key_bpm_delay
+    option: default
   - step: midi_quantization
     option: default

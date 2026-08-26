@@ -74,8 +74,25 @@ class AudioToMidiConfig:
 
 
 @dataclass(frozen=True)
-class MusicMetadataConfig:
+class KeyBpmDelayConfig:
+    enabled: bool
+    algorithm: str
     alignment_sample_count: int = 35
+
+
+@dataclass(frozen=True)
+class ChordRecognitionConfig:
+    enabled: bool
+    algorithm: str
+    repository_path: Path
+    chord_dictionary: str
+
+
+@dataclass(frozen=True)
+class MusicMetadataConfig:
+    enabled: bool
+    key_bpm_delay: KeyBpmDelayConfig
+    chord_recognition: ChordRecognitionConfig
 
 
 @dataclass(frozen=True)
@@ -89,9 +106,12 @@ class MidiQuantizationConfig:
 @dataclass(frozen=True)
 class BeatDetectionConfig:
     enabled: bool
+    algorithm: str
     model: str
     device: str
     dbn: bool
+    minimum_bpm: float = 90.0
+    maximum_bpm: float = 180.0
 
 
 @dataclass(frozen=True)
@@ -367,20 +387,89 @@ def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
             ),
         )
     if step.name == "beat_detection":
+        algorithm = _name(payload.get("algorithm", "beat_this"), f"{source}.algorithm").casefold()
+        if algorithm not in {"beat_this", "madmom"}:
+            raise ValueError(f"{source}.algorithm must be beat_this or madmom")
+        minimum_bpm = _positive_number(payload.get("minimum_bpm", 90.0), f"{source}.minimum_bpm")
+        maximum_bpm = _positive_number(payload.get("maximum_bpm", 180.0), f"{source}.maximum_bpm")
+        if maximum_bpm <= minimum_bpm:
+            raise ValueError(f"{source}.maximum_bpm must be greater than minimum_bpm")
         return BeatDetectionConfig(
             enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+            algorithm=algorithm,
             model=_string(payload.get("model", "final0"), f"{source}.model"),
             device=_device(payload.get("device", "auto"), f"{source}.device"),
             dbn=_boolean(payload.get("dbn", False), f"{source}.dbn"),
+            minimum_bpm=minimum_bpm,
+            maximum_bpm=maximum_bpm,
         )
     if step.name == "audio_to_midi":
         return _parse_audio_to_midi(source, payload)
     if step.name == "music_metadata":
-        return MusicMetadataConfig(
-            alignment_sample_count=_positive_int(
-                payload.get("alignment_sample_count", 35),
-                f"{source}.alignment_sample_count",
+        key_payload = _mapping(
+            payload.get("key_bpm_delay", {}),
+            f"{source}.key_bpm_delay",
+        )
+        chord_payload = _mapping(
+            payload.get("chord_recognition", {}),
+            f"{source}.chord_recognition",
+        )
+        chord_algorithm = _name(
+            chord_payload.get("algorithm", "chord_cnn_lstm"),
+            f"{source}.chord_recognition.algorithm",
+        ).casefold()
+        if chord_algorithm != "chord_cnn_lstm":
+            raise ValueError(
+                f"{source}.chord_recognition.algorithm must be chord_cnn_lstm"
             )
+        chord_dictionary = _name(
+            chord_payload.get("chord_dictionary", "submission"),
+            f"{source}.chord_recognition.chord_dictionary",
+        ).casefold()
+        supported = {"submission", "ismir2017", "full", "extended"}
+        if chord_dictionary not in supported:
+            raise ValueError(
+                f"{source}.chord_recognition.chord_dictionary must be one of: "
+                + ", ".join(sorted(supported))
+            )
+        key_algorithm = _name(
+            key_payload.get("algorithm", "key_bpm_delay"),
+            f"{source}.key_bpm_delay.algorithm",
+        ).casefold()
+        if key_algorithm != "key_bpm_delay":
+            raise ValueError(
+                f"{source}.key_bpm_delay.algorithm must be key_bpm_delay"
+            )
+        return MusicMetadataConfig(
+            enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+            key_bpm_delay=KeyBpmDelayConfig(
+                enabled=_boolean(
+                    key_payload.get("enabled", True),
+                    f"{source}.key_bpm_delay.enabled",
+                ),
+                algorithm=key_algorithm,
+                alignment_sample_count=_positive_int(
+                    key_payload.get("alignment_sample_count", 35),
+                    f"{source}.key_bpm_delay.alignment_sample_count",
+                ),
+            ),
+            chord_recognition=ChordRecognitionConfig(
+                enabled=_boolean(
+                    chord_payload.get("enabled", True),
+                    f"{source}.chord_recognition.enabled",
+                ),
+                algorithm=chord_algorithm,
+                repository_path=Path(
+                    _string(
+                        chord_payload.get(
+                            "repository_path",
+                            "data/model/chord_cnn_lstm",
+                        ),
+                        f"{source}.chord_recognition.repository_path",
+                    )
+                ),
+                chord_dictionary=chord_dictionary,
+            ),
         )
     if step.name == "midi_quantization":
         return MidiQuantizationConfig(

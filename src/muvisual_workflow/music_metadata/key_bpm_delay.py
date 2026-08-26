@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+from typing import Mapping
 
 try:
     import mido
@@ -269,6 +270,8 @@ def update_song_metadata(
     audio: str | None = None,
     beats: list[float] | None = None,
     downbeats: list[float] | None = None,
+    beat_metadata: Mapping[str, object] | None = None,
+    chords: Mapping[str, object] | None = None,
     instrument: str | None = None,
     instrument_metadata: MusicMetadata | None = None,
 ) -> None:
@@ -280,6 +283,10 @@ def update_song_metadata(
         payload["beats"] = beats
     if downbeats is not None:
         payload["downbeats"] = downbeats
+    if beat_metadata is not None:
+        payload["beat"] = dict(beat_metadata)
+    if chords is not None:
+        payload["chords"] = dict(chords)
     if instrument is not None:
         if instrument_metadata is None:
             raise ValueError("instrument_metadata is required when instrument is set")
@@ -322,7 +329,7 @@ def main() -> None:
 
     output_path = args.output.expanduser().resolve()
     for source in files:
-        metadata = analyze_file(source, config.alignment_sample_count)
+        metadata = analyze_file(source, config.key_bpm_delay.alignment_sample_count)
         destination = (
             output_path
             if len(files) == 1 and output_path.suffix.lower() == ".json"
