@@ -15,9 +15,9 @@ import mutagen
 from muvisual_workflow.audio_to_midi import AudioToMidiStep
 from muvisual_workflow.beat_detection import BeatDetector, write_result
 from muvisual_workflow.core.audio_conversion import convert_to_mp3
-from muvisual_workflow.audio_to_midi.noise_gate import gate_file
 from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
+    apply_noise_gate,
     create_separator,
     separate_with_loaded_model,
 )
@@ -30,8 +30,8 @@ from muvisual_workflow.core.config import (
 )
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
-from muvisual_workflow.audio_to_midi.normalizer import normalize_file
-from muvisual_workflow.audio_to_midi.quantization import quantize_midi
+from muvisual_workflow.midi_quantization import quantize_midi
+from muvisual_workflow.music_metadata import normalize_file
 
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Workflow YAML file (default: config/workflow.yaml)",
+        help="Instrument workflow YAML file (default: config/workflow_piano.yaml)",
     )
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
@@ -252,63 +252,35 @@ def generate_beats(
         release_beat_detector(detector)
 
 
-def process_instrument(
+def store_stem_audio(
     instrument: str,
     stem_path: Path,
     result_dir: Path,
-    work_dir: Path,
+    output_name: str,
+) -> None:
+    instrument_dir = result_dir / instrument
+    instrument_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = instrument_dir / f"{output_name}_{instrument}.mp3"
+    convert_to_mp3(stem_path, audio_path)
+    logger.info("Stored separated stem: %s", audio_path)
+
+
+def transcribe_instrument(
+    instrument: str,
+    stem_path: Path,
+    result_dir: Path,
     output_name: str,
     config: InstrumentAudioToMidiConfig,
-) -> None:
-    instrument_dir = result_dir / instrument
-    instrument_dir.mkdir(parents=True)
-    gated_path = work_dir / "gated" / f"{instrument}.wav"
-    audio_path = instrument_dir / f"{output_name}_{instrument}.mp3"
-    midi_path = instrument_dir / f"{output_name}_{instrument}.mid"
-    gate_file(stem_path, gated_path)
-    convert_to_mp3(gated_path, audio_path)
-    logger.info("Gated stem: %s", audio_path)
-
+) -> Path:
+    midi_path = result_dir / instrument / f"{output_name}_{instrument}.mid"
+    midi_path.parent.mkdir(parents=True, exist_ok=True)
     step = AudioToMidiStep(config)
     try:
-        step.run(gated_path, midi_path)
+        step.run(stem_path, midi_path)
     finally:
         release_audio_to_midi_step(step)
-    key, bpm, delay, _, _, _ = normalize_file(midi_path, midi_path)
-    logger.info(
-        "Normalized MIDI: %s (key=%s, bpm=%.2f, delay=%.1fms)",
-        midi_path,
-        key,
-        bpm,
-        delay * 1000,
-    )
-    quantize_midi(midi_path, midi_path, gated_path)
-    logger.info("Quantized MIDI: %s", midi_path)
-
-
-def write_stem_audio(
-    instrument: str,
-    stem_path: Path,
-    result_dir: Path,
-    work_dir: Path,
-    output_name: str,
-    config: InstrumentAudioToMidiConfig | None,
-) -> None:
-    instrument_dir = result_dir / instrument
-    if config is None:
-        instrument_dir.mkdir(parents=True)
-        audio_path = instrument_dir / f"{output_name}_{instrument}.mp3"
-        convert_to_mp3(stem_path, audio_path)
-        logger.info("Stored separated stem without transcription: %s", audio_path)
-        return
-    process_instrument(
-        instrument,
-        stem_path,
-        result_dir,
-        work_dir,
-        output_name,
-        config,
-    )
+    logger.info("Transcribed MIDI: %s", midi_path)
+    return midi_path
 
 
 def process_audio(
@@ -318,15 +290,25 @@ def process_audio(
     work_dir: Path,
     config: MuVisualConfig,
 ) -> None:
+    if not config.enabled:
+        raise RuntimeError(
+            f"Instrument workflow {config.instrument!r} is disabled"
+        )
     destination_dir = output_dir / output_name
+    raw_stem_dir = work_dir / "raw_stems"
     stem_dir = work_dir / "stems"
     result_dir = work_dir / "result"
     result_dir.mkdir(parents=True)
+    if destination_dir.exists():
+        if not destination_dir.is_dir():
+            raise RuntimeError(f"Output path is not a directory: {destination_dir}")
+        shutil.copytree(destination_dir, result_dir, dirs_exist_ok=True)
     original_name = f"{output_name}.mp3"
     convert_to_mp3(source, result_dir / original_name)
     logger.info("Stored original audio: %s", result_dir / original_name)
 
     stems: dict[str, Path] = {}
+    midi_files: dict[str, Path] = {}
     instrument_configs = (
         config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
     )
@@ -351,9 +333,11 @@ def process_audio(
 
         if workflow_step.name == "separation":
             separation_config = config.require_separation()
-            separator = create_separator(stem_dir, separation_config.model)
+            separator = create_separator(raw_stem_dir, separation_config.model)
             try:
-                output_files = separate_with_loaded_model(separator, source, stem_dir)
+                output_files = separate_with_loaded_model(
+                    separator, source, raw_stem_dir
+                )
                 logger.info(
                     "Generated %d stem file(s): %s",
                     len(output_files),
@@ -361,40 +345,79 @@ def process_audio(
                 )
             finally:
                 release_separator(separator)
-            stems = discover_instrument_stems(stem_dir)
+
+            raw_stems = discover_instrument_stems(raw_stem_dir)
+            stems = {}
+            for instrument, raw_stem_path in raw_stems.items():
+                stem_path = stem_dir / f"{instrument}.wav"
+                apply_noise_gate(
+                    raw_stem_path,
+                    stem_path,
+                    separation_config.noise_gate,
+                )
+                stems[instrument] = stem_path
+                store_stem_audio(instrument, stem_path, result_dir, output_name)
+            if separation_config.noise_gate.enabled:
+                logger.info("Applied BS-Roformer noise gate to %d stem(s)", len(stems))
             continue
 
-        if not stems:
-            raise RuntimeError("audio_to_midi requires separation output")
-        missing_configured_stems = sorted(set(instrument_configs) - set(stems))
-        if missing_configured_stems:
-            raise RuntimeError(
-                "Configured instruments were not produced by separation: "
-                + ", ".join(missing_configured_stems)
+        if workflow_step.name == "audio_to_midi":
+            if not stems:
+                raise RuntimeError("audio_to_midi requires separation output")
+            audio_to_midi_config = config.require_audio_to_midi()
+            missing_configured_stems = sorted(
+                set(audio_to_midi_config.instruments) - set(stems)
             )
-        for instrument, stem_path in stems.items():
-            instrument_config = instrument_configs.get(instrument)
-            if instrument_config is not None:
-                logger.info("Processing configured instrument: %s", instrument)
-            write_stem_audio(
-                instrument,
-                stem_path,
-                result_dir,
-                work_dir,
-                output_name,
-                instrument_config,
-            )
+            if missing_configured_stems:
+                raise RuntimeError(
+                    "Configured instruments were not produced by separation: "
+                    + ", ".join(missing_configured_stems)
+                )
+            for instrument, instrument_config in audio_to_midi_config.instruments.items():
+                logger.info("Transcribing configured instrument: %s", instrument)
+                midi_files[instrument] = transcribe_instrument(
+                    instrument,
+                    stems[instrument],
+                    result_dir,
+                    output_name,
+                    instrument_config,
+                )
+            continue
 
-    if stems and config.audio_to_midi is None:
-        for instrument, stem_path in stems.items():
-            write_stem_audio(
-                instrument,
-                stem_path,
-                result_dir,
-                work_dir,
-                output_name,
-                None,
-            )
+        if workflow_step.name == "music_metadata":
+            if not midi_files:
+                raise RuntimeError("music_metadata requires audio_to_midi output")
+            metadata_config = config.require_music_metadata()
+            for instrument, midi_path in midi_files.items():
+                key, bpm, delay, _, _, _ = normalize_file(
+                    midi_path,
+                    midi_path,
+                    metadata_config.alignment_sample_count,
+                )
+                logger.info(
+                    "Recognized music metadata for %s: key=%s, bpm=%.2f, delay=%.1f ms",
+                    instrument,
+                    key,
+                    bpm,
+                    delay * 1000,
+                )
+            continue
+
+        if workflow_step.name == "midi_quantization":
+            if not midi_files:
+                raise RuntimeError("midi_quantization requires music_metadata output")
+            quantization_config = config.require_midi_quantization()
+            for instrument, midi_path in midi_files.items():
+                quantize_midi(
+                    midi_path,
+                    midi_path,
+                    stems[instrument],
+                    quantization_config,
+                )
+                logger.info("Quantized MIDI: %s", midi_path)
+            continue
+
+        raise RuntimeError(f"Unsupported workflow step: {workflow_step.name}")
 
     missing = [
         path
@@ -453,6 +476,10 @@ def main() -> None:
     configure_logging()
     args = parse_args()
     config = resolve_runtime_config(load_config(args.config), args)
+    if not config.enabled:
+        logger.info("Instrument workflow %s is disabled", config.instrument)
+        return
+    logger.info("Selected instrument workflow: %s", config.instrument)
     instrument_configs = (
         config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
     )

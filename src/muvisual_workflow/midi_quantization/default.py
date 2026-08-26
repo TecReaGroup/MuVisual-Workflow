@@ -6,6 +6,7 @@ import argparse
 import wave
 from pathlib import Path
 
+from muvisual_workflow.core.config import MidiQuantizationConfig, load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
@@ -13,13 +14,14 @@ from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
 DEFAULT_AUDIO = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_quantized"
-logger = get_logger("quantization")
+logger = get_logger("midi_quantization")
 
 
 def quantize_midi(
     source: Path,
     destination: Path | None = None,
     audio_path: Path | None = None,
+    config: MidiQuantizationConfig | None = None,
 ) -> Path:
     try:
         import mido
@@ -37,6 +39,7 @@ def quantize_midi(
     except (OSError, wave.Error) as exc:
         raise RuntimeError(f"Could not read WAV duration: {audio_path}: {exc}") from exc
 
+    settings = config or MidiQuantizationConfig()
     midi = mido.MidiFile(source)
     tempo = next(
         (
@@ -50,8 +53,8 @@ def quantize_midi(
     audio_end_tick = round(
         mido.second2tick(audio_duration_seconds, midi.ticks_per_beat, tempo)
     )
-    c4_note = 60
-    time_threshold = 100
+    c4_note = settings.hand_split_note
+    time_threshold = settings.simultaneous_threshold_ticks
 
     for track in midi.tracks:
         if not any(message.type in {"note_on", "note_off"} for message in track):
@@ -108,7 +111,10 @@ def quantize_midi(
                     target_end = (
                         audio_end_tick
                         if is_last_group
-                        else max(note["time"] + 100, next_time - 10)
+                        else max(
+                            note["time"] + settings.minimum_note_ticks,
+                            next_time - settings.next_group_gap_ticks,
+                        )
                     )
                     best_off = None
                     best_distance = float("inf")
@@ -189,7 +195,9 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--audio", type=Path, default=DEFAULT_AUDIO)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args()
+    config = load_config(args.config).require_midi_quantization()
 
     input_path = args.input.expanduser().resolve()
     audio_path = args.audio.expanduser().resolve()
@@ -210,7 +218,7 @@ def main() -> None:
         logger.info(
             "Quantized: %s -> %s",
             input_path,
-            quantize_midi(input_path, destination, source_audio),
+            quantize_midi(input_path, destination, source_audio, config),
         )
         return
 
@@ -226,7 +234,7 @@ def main() -> None:
         logger.info(
             "Quantized: %s -> %s",
             source,
-            quantize_midi(source, destination, source_audio),
+            quantize_midi(source, destination, source_audio, config),
         )
 
 

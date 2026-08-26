@@ -11,8 +11,14 @@ import yaml
 
 from muvisual_workflow.core.paths import PROJECT_ROOT
 
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "workflow.yaml"
-SUPPORTED_STEPS = ("beat_detection", "separation", "audio_to_midi")
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "workflow_piano.yaml"
+SUPPORTED_STEPS = (
+    "beat_detection",
+    "separation",
+    "audio_to_midi",
+    "music_metadata",
+    "midi_quantization",
+)
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -23,8 +29,19 @@ class WorkflowStep:
 
 
 @dataclass(frozen=True)
+class NoiseGateConfig:
+    enabled: bool = True
+    threshold_db: float = -48.0
+    attack_ms: float = 8.0
+    hold_ms: float = 80.0
+    release_ms: float = 180.0
+    analysis_ms: float = 5.0
+
+
+@dataclass(frozen=True)
 class SeparationConfig:
     model: str
+    noise_gate: NoiseGateConfig
 
 
 @dataclass(frozen=True)
@@ -57,6 +74,19 @@ class AudioToMidiConfig:
 
 
 @dataclass(frozen=True)
+class MusicMetadataConfig:
+    alignment_sample_count: int = 35
+
+
+@dataclass(frozen=True)
+class MidiQuantizationConfig:
+    hand_split_note: int = 60
+    simultaneous_threshold_ticks: int = 100
+    minimum_note_ticks: int = 100
+    next_group_gap_ticks: int = 10
+
+
+@dataclass(frozen=True)
 class BeatDetectionConfig:
     enabled: bool
     model: str
@@ -66,9 +96,13 @@ class BeatDetectionConfig:
 
 @dataclass(frozen=True)
 class MuVisualConfig:
+    enabled: bool
+    instrument: str
     workflow: tuple[WorkflowStep, ...]
     separation: SeparationConfig | None = None
     audio_to_midi: AudioToMidiConfig | None = None
+    music_metadata: MusicMetadataConfig | None = None
+    midi_quantization: MidiQuantizationConfig | None = None
     beat_detection: BeatDetectionConfig | None = None
 
     def has_step(self, name: str) -> bool:
@@ -83,6 +117,16 @@ class MuVisualConfig:
         if self.audio_to_midi is None:
             raise ValueError("The workflow does not configure the audio_to_midi step")
         return self.audio_to_midi
+
+    def require_music_metadata(self) -> MusicMetadataConfig:
+        if self.music_metadata is None:
+            raise ValueError("The workflow does not configure the music_metadata step")
+        return self.music_metadata
+
+    def require_midi_quantization(self) -> MidiQuantizationConfig:
+        if self.midi_quantization is None:
+            raise ValueError("The workflow does not configure the midi_quantization step")
+        return self.midi_quantization
 
     def require_beat_detection(self) -> BeatDetectionConfig:
         if self.beat_detection is None:
@@ -119,6 +163,45 @@ def _boolean(value: object, field_name: str) -> bool:
     return value
 
 
+def _number(value: object, field_name: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a number")
+    return float(value)
+
+
+def _non_negative_number(value: object, field_name: str) -> float:
+    number = _number(value, field_name)
+    if number < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return number
+
+
+def _positive_number(value: object, field_name: str) -> float:
+    number = _number(value, field_name)
+    if number <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return number
+
+
+def _positive_int(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _non_negative_int(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _midi_note(value: object, field_name: str) -> int:
+    note = _non_negative_int(value, field_name)
+    if note > 127:
+        raise ValueError(f"{field_name} must be between 0 and 127")
+    return note
+
+
 def _optional_string(value: object, field_name: str) -> str | None:
     if value is None or value == "auto":
         return None
@@ -128,9 +211,7 @@ def _optional_string(value: object, field_name: str) -> str | None:
 def _optional_positive_int(value: object, field_name: str) -> int | None:
     if value is None:
         return None
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer")
-    return value
+    return _positive_int(value, field_name)
 
 
 def _device(value: object, field_name: str) -> str:
@@ -186,11 +267,18 @@ def _load_workflow(payload: dict[str, Any]) -> tuple[WorkflowStep, ...]:
         seen.add(step)
 
     names = [step.name for step in workflow]
-    if "audio_to_midi" in seen:
-        if "separation" not in seen:
-            raise ValueError("audio_to_midi requires the separation step")
-        if names.index("audio_to_midi") < names.index("separation"):
-            raise ValueError("separation must appear before audio_to_midi in workflow")
+    dependencies = {
+        "audio_to_midi": "separation",
+        "music_metadata": "audio_to_midi",
+        "midi_quantization": "music_metadata",
+    }
+    for step, dependency in dependencies.items():
+        if step not in seen:
+            continue
+        if dependency not in seen:
+            raise ValueError(f"{step} requires the {dependency} step")
+        if names.index(step) < names.index(dependency):
+            raise ValueError(f"{dependency} must appear before {step} in workflow")
     return tuple(workflow)
 
 
@@ -231,21 +319,7 @@ def _instrument_config(
     )
 
 
-def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
-    source = f"{step.name}/{step.option}.yaml"
-    if step.name == "separation":
-        return SeparationConfig(
-            model=_string(payload.get("model", "BS-Roformer-SW.ckpt"), f"{source}.model")
-        )
-
-    if step.name == "beat_detection":
-        return BeatDetectionConfig(
-            enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
-            model=_string(payload.get("model", "final0"), f"{source}.model"),
-            device=_device(payload.get("device", "auto"), f"{source}.device"),
-            dbn=_boolean(payload.get("dbn", False), f"{source}.dbn"),
-        )
-
+def _parse_audio_to_midi(source: str, payload: dict[str, Any]) -> AudioToMidiConfig:
     default_instrument = _string(
         payload.get("default_instrument", "piano"),
         f"{source}.default_instrument",
@@ -277,10 +351,71 @@ def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
     return AudioToMidiConfig(default_instrument, instruments)
 
 
+def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
+    source = f"{step.name}/{step.option}.yaml"
+    if step.name == "separation":
+        noise_gate_payload = _mapping(payload.get("noise_gate", {}), f"{source}.noise_gate")
+        return SeparationConfig(
+            model=_string(payload.get("model", "BS-Roformer-SW.ckpt"), f"{source}.model"),
+            noise_gate=NoiseGateConfig(
+                enabled=_boolean(noise_gate_payload.get("enabled", True), f"{source}.noise_gate.enabled"),
+                threshold_db=_number(noise_gate_payload.get("threshold_db", -48.0), f"{source}.noise_gate.threshold_db"),
+                attack_ms=_non_negative_number(noise_gate_payload.get("attack_ms", 8.0), f"{source}.noise_gate.attack_ms"),
+                hold_ms=_non_negative_number(noise_gate_payload.get("hold_ms", 80.0), f"{source}.noise_gate.hold_ms"),
+                release_ms=_non_negative_number(noise_gate_payload.get("release_ms", 180.0), f"{source}.noise_gate.release_ms"),
+                analysis_ms=_positive_number(noise_gate_payload.get("analysis_ms", 5.0), f"{source}.noise_gate.analysis_ms"),
+            ),
+        )
+    if step.name == "beat_detection":
+        return BeatDetectionConfig(
+            enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+            model=_string(payload.get("model", "final0"), f"{source}.model"),
+            device=_device(payload.get("device", "auto"), f"{source}.device"),
+            dbn=_boolean(payload.get("dbn", False), f"{source}.dbn"),
+        )
+    if step.name == "audio_to_midi":
+        return _parse_audio_to_midi(source, payload)
+    if step.name == "music_metadata":
+        return MusicMetadataConfig(
+            alignment_sample_count=_positive_int(
+                payload.get("alignment_sample_count", 35),
+                f"{source}.alignment_sample_count",
+            )
+        )
+    if step.name == "midi_quantization":
+        return MidiQuantizationConfig(
+            hand_split_note=_midi_note(payload.get("hand_split_note", 60), f"{source}.hand_split_note"),
+            simultaneous_threshold_ticks=_non_negative_int(
+                payload.get("simultaneous_threshold_ticks", 100),
+                f"{source}.simultaneous_threshold_ticks",
+            ),
+            minimum_note_ticks=_positive_int(
+                payload.get("minimum_note_ticks", 100),
+                f"{source}.minimum_note_ticks",
+            ),
+            next_group_gap_ticks=_non_negative_int(
+                payload.get("next_group_gap_ticks", 10),
+                f"{source}.next_group_gap_ticks",
+            ),
+        )
+    raise ValueError(f"Unsupported workflow step: {step.name}")
+
+
 def load_config(path: Path | None = None) -> MuVisualConfig:
-    """Load workflow.yaml and each selected config/<step>/<option>.yaml file."""
+    """Load a workflow file and each selected config/<step>/<option>.yaml file."""
     workflow_path = (path or DEFAULT_CONFIG_PATH).expanduser().resolve()
     workflow_payload = _load_yaml(workflow_path, "Workflow configuration")
+    unexpected = set(workflow_payload) - {"enabled", "instrument", "workflow"}
+    if unexpected:
+        raise ValueError(
+            "Workflow configuration has unsupported fields: "
+            + ", ".join(sorted(unexpected))
+        )
+    enabled = _boolean(workflow_payload.get("enabled", True), "enabled")
+    instrument = _name(
+        workflow_payload.get("instrument"),
+        "instrument",
+    ).casefold()
     workflow = _load_workflow(workflow_payload)
     config_root = workflow_path.parent
 
@@ -290,9 +425,23 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
         payload = _load_yaml(option_path, f"Configuration option for {step.name}")
         loaded[step.name] = _parse_step_option(step, payload)
 
+    audio_to_midi = cast(AudioToMidiConfig | None, loaded.get("audio_to_midi"))
+    if audio_to_midi is not None:
+        configured_instruments = set(audio_to_midi.instruments)
+        if configured_instruments != {instrument}:
+            configured = ", ".join(sorted(configured_instruments))
+            raise ValueError(
+                f"Instrument workflow {instrument!r} must configure only that instrument; "
+                f"configured: {configured}"
+            )
+
     return MuVisualConfig(
+        enabled=enabled,
+        instrument=instrument,
         workflow=workflow,
         separation=cast(SeparationConfig | None, loaded.get("separation")),
-        audio_to_midi=cast(AudioToMidiConfig | None, loaded.get("audio_to_midi")),
+        audio_to_midi=audio_to_midi,
+        music_metadata=cast(MusicMetadataConfig | None, loaded.get("music_metadata")),
+        midi_quantization=cast(MidiQuantizationConfig | None, loaded.get("midi_quantization")),
         beat_detection=cast(BeatDetectionConfig | None, loaded.get("beat_detection")),
     )

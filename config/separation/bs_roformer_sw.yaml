@@ -1,1 +1,9 @@
 model: BS-Roformer-SW.ckpt
+
+noise_gate:
+  enabled: true
+  threshold_db: -48.0
+  attack_ms: 8.0
+  hold_ms: 80.0
+  release_ms: 180.0
+  analysis_ms: 5.0

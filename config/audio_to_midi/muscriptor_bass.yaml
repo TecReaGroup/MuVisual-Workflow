@@ -1,0 +1,11 @@
+default_instrument: bass
+device: auto
+dtype: auto
+
+instruments:
+  bass:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - acoustic_bass
+      - electric_bass

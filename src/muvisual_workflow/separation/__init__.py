@@ -2,6 +2,7 @@
 
 from muvisual_workflow.separation.bs_roformer_sw import (
     AUDIO_EXTENSIONS,
+    apply_noise_gate,
     create_separator,
     main,
     prepare_local_model,
@@ -10,6 +11,7 @@ from muvisual_workflow.separation.bs_roformer_sw import (
 
 __all__ = [
     "AUDIO_EXTENSIONS",
+    "apply_noise_gate",
     "create_separator",
     "main",
     "prepare_local_model",

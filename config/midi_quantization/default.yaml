@@ -1,0 +1,4 @@
+hand_split_note: 60
+simultaneous_threshold_ticks: 100
+minimum_note_ticks: 100
+next_group_gap_ticks: 10

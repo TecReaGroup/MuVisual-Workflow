@@ -1,0 +1,10 @@
+default_instrument: drums
+device: auto
+dtype: auto
+
+instruments:
+  drums:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - drums

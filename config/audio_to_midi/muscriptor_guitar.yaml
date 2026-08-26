@@ -1,0 +1,12 @@
+default_instrument: guitar
+device: auto
+dtype: auto
+
+instruments:
+  guitar:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - acoustic_guitar
+      - clean_electric_guitar
+      - distorted_electric_guitar

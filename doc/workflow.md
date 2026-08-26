@@ -4,7 +4,7 @@
 → 对整首歌运行一次 Beat This
 → 分离所有 stems，并且执行 noise gate
 → 仅对配置的乐器执行 Audio-to-MIDI 转录（其他的乐器文件夹只放入分离后的音频）
-→ 对 midi 文件执行 normalizer
+→ 识别音乐的元数据：基于 midi 或 源音频 识别音频元数据（BPM，和弦，调性等）
 → 对 midi 文件执行量化 quantization
 
 ## File

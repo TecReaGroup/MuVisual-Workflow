@@ -21,13 +21,14 @@ try:
 except ImportError:
     mido = None  # type: ignore[assignment]
 
+from muvisual_workflow.core.config import load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_fixed"
 ALIGNMENT_SAMPLE_COUNT = 35
-logger = get_logger("normalizer")
+logger = get_logger("music_metadata")
 
 MAJOR_PROFILE = (6.35, 2.18, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
 MINOR_PROFILE = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
@@ -119,6 +120,7 @@ def estimate_bpm(onsets: list[float]) -> float:
 def estimate_delay(
     notes: list[tuple[float, int, float]],
     beat_seconds: float,
+    alignment_sample_count: int = ALIGNMENT_SAMPLE_COUNT,
 ) -> tuple[float, int, int, float]:
     """Find the positive time offset of the BPM grid, without moving MIDI.
 
@@ -132,7 +134,7 @@ def estimate_delay(
     for onset, velocity, duration in ordered_onsets:
         if duration >= minimum_duration:
             samples.append((onset, velocity))
-        if len(samples) == ALIGNMENT_SAMPLE_COUNT:
+        if len(samples) == alignment_sample_count:
             break
     if not samples:
         return 0.0, 0, 0, 0.0
@@ -234,7 +236,11 @@ def remove_key_signature_events(track: mido.MidiTrack) -> None:
     track[:] = messages
 
 
-def normalize_file(source: Path, destination: Path) -> tuple[str, float, float, int, int, float]:
+def normalize_file(
+    source: Path,
+    destination: Path,
+    alignment_sample_count: int = ALIGNMENT_SAMPLE_COUNT,
+) -> tuple[str, float, float, int, int, float]:
     mid = mido.MidiFile(source)
     key = estimate_key(mid)
     tempos = tempo_map(mid)
@@ -265,7 +271,7 @@ def normalize_file(source: Path, destination: Path) -> tuple[str, float, float, 
         positive_count,
         sample_count,
         alignment_error,
-    ) = estimate_delay(note_events, beat_seconds)
+    ) = estimate_delay(note_events, beat_seconds, alignment_sample_count)
     tracks = [
         normalize_track(track, mid.ticks_per_beat, tempos, new_tempo)
         for track in mid.tracks
@@ -297,7 +303,9 @@ def main() -> None:
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args()
+    config = load_config(args.config).require_music_metadata()
     if mido is None:
         raise SystemExit("Missing dependency: run `uv sync` from the project root")
     files = sorted(args.input.glob("*.mid")) + sorted(args.input.glob("*.midi"))
@@ -308,6 +316,7 @@ def main() -> None:
         key, bpm, delay, positive_count, sample_count, alignment_error = normalize_file(
             source,
             destination,
+            config.alignment_sample_count,
         )
         negative_count = sample_count - positive_count
         average_error = alignment_error / sample_count if sample_count else 0.0
