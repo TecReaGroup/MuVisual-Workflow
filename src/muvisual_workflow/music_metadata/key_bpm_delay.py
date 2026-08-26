@@ -1,17 +1,9 @@
-"""Analyze and gently normalize MIDI files.
-
-Install project dependencies first:
-    uv sync
-
-For each MIDI file this script reports an estimated key and BPM, removes tempo
-changes, writes one global tempo event, and applies one uniform time shift to
-the complete performance. Individual notes are never quantized or moved
-relative to one another.
-"""
+"""Analyze MIDI files and store song-level metadata as JSON without modifying MIDI."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
@@ -26,7 +18,7 @@ from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi"
-DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi_fixed"
+DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "metadata"
 ALIGNMENT_SAMPLE_COUNT = 35
 logger = get_logger("music_metadata")
 
@@ -58,14 +50,6 @@ def estimate_key(mid: mido.MidiFile) -> str:
         scores.append((corr(rotated, MAJOR_PROFILE), f"{NAMES[root]} major"))
         scores.append((corr(rotated, MINOR_PROFILE), f"{NAMES[root]} minor"))
     return max(scores, key=lambda item: item[0])[1]
-
-def midi_key_signature(key_name: str) -> str | None:
-    """Convert a display name such as C# major to Mido key name."""
-    if key_name == "Unknown":
-        return None
-    root, mode = key_name.rsplit(" ", 1)
-    return f"{root}m" if mode == "minor" else root
-
 
 def tempo_map(mid: mido.MidiFile) -> list[tuple[int, int]]:
     events = [(0, mido.bpm2tempo(120))]
@@ -189,63 +173,46 @@ def estimate_delay(
     return best_grid_delay, best_positive_count, len(samples), best_grid_error
 
 
-def normalize_track(
-    track: mido.MidiTrack,
-    ticks_per_beat: int,
-    tempos: list[tuple[int, int]],
-    new_tempo: int,
-) -> mido.MidiTrack:
-    events: list[tuple[int, mido.Message]] = []
-    absolute = 0
-    for msg in track:
-        absolute += msg.time
-        seconds = tick_to_seconds(absolute, ticks_per_beat, tempos)
-        new_tick = round(mido.second2tick(max(0.0, seconds), ticks_per_beat, new_tempo))
-        events.append((new_tick, msg.copy()))
+@dataclass(frozen=True)
+class MusicMetadata:
+    """Metadata inferred from one instrument MIDI file."""
 
-    normalized = mido.MidiTrack()
-    previous = 0
-    for tick, msg in events:
-        msg.time = max(0, tick - previous)
-        previous = tick
-        normalized.append(msg)
-    return normalized
+    key: str
+    bpm: float
+    delay: float
+    positive_count: int
+    sample_count: int
+    alignment_error: float
 
-
-def remove_tempo_events(track: mido.MidiTrack) -> None:
-    carried_time = 0
-    messages = []
-    for msg in track:
-        if msg.type == "set_tempo":
-            carried_time += msg.time
-            continue
-        copied = msg.copy(time=msg.time + carried_time)
-        carried_time = 0
-        messages.append(copied)
-    track[:] = messages
-
-def remove_key_signature_events(track: mido.MidiTrack) -> None:
-    carried_time = 0
-    messages = []
-    for msg in track:
-        if msg.type == "key_signature":
-            carried_time += msg.time
-            continue
-        messages.append(msg.copy(time=msg.time + carried_time))
-        carried_time = 0
-    track[:] = messages
+    def to_dict(self) -> dict[str, object]:
+        negative_count = self.sample_count - self.positive_count
+        average_error = (
+            self.alignment_error / self.sample_count if self.sample_count else 0.0
+        )
+        return {
+            "key": self.key,
+            "bpm": self.bpm,
+            "delay": self.delay,
+            "alignment": {
+                "positive_count": self.positive_count,
+                "negative_count": negative_count,
+                "sample_count": self.sample_count,
+                "error": self.alignment_error,
+                "average_error": average_error,
+            },
+        }
 
 
-def normalize_file(
+def analyze_file(
     source: Path,
-    destination: Path,
     alignment_sample_count: int = ALIGNMENT_SAMPLE_COUNT,
-) -> tuple[str, float, float, int, int, float]:
+) -> MusicMetadata:
+    """Infer musical metadata without changing or saving the MIDI file."""
     mid = mido.MidiFile(source)
     key = estimate_key(mid)
     tempos = tempo_map(mid)
-    onset_seconds = []
-    note_events = []
+    onset_seconds: list[float] = []
+    note_events: list[tuple[float, int, float]] = []
     for track in mid.tracks:
         absolute = 0
         active_notes: dict[tuple[int, int], list[tuple[float, int]]] = {}
@@ -256,83 +223,122 @@ def normalize_file(
                 onset_seconds.append(onset)
                 note_key = (msg.channel, msg.note)
                 active_notes.setdefault(note_key, []).append((onset, msg.velocity))
-            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
                 note_key = (msg.channel, msg.note)
                 starts = active_notes.get(note_key)
                 if starts:
                     onset, velocity = starts.pop(0)
                     release = tick_to_seconds(absolute, mid.ticks_per_beat, tempos)
                     note_events.append((onset, velocity, max(0.0, release - onset)))
+
     bpm = estimate_bpm(onset_seconds)
-    new_tempo = mido.bpm2tempo(bpm)
     beat_seconds = 60.0 / bpm
-    (
-        grid_delay_seconds,
-        positive_count,
-        sample_count,
-        alignment_error,
-    ) = estimate_delay(note_events, beat_seconds, alignment_sample_count)
-    tracks = [
-        normalize_track(track, mid.ticks_per_beat, tempos, new_tempo)
-        for track in mid.tracks
-    ]
-    # Keep one global tempo at the beginning of the first track.
-    for track in tracks:
-        remove_tempo_events(track)
-        remove_key_signature_events(track)
-    tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=new_tempo, time=0))
-    # FF01 delay is a global BPM-grid offset; MIDI event times stay unchanged.
-    delay_metadata = json.dumps(
-        {"delay": {"timestamp": 0, "duration": grid_delay_seconds}},
-        separators=(",", ":"),
+    delay, positive_count, sample_count, alignment_error = estimate_delay(
+        note_events,
+        beat_seconds,
+        alignment_sample_count,
     )
-    tracks[0].insert(1, mido.MetaMessage("text", text=delay_metadata, time=0))
-    key_for_midi = midi_key_signature(key)
-    if key_for_midi is not None:
-        tracks[0].insert(2, mido.MetaMessage("key_signature", key=key_for_midi, time=0))
-    mid.tracks = tracks
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    mid.save(destination)
-    return key, bpm, grid_delay_seconds, positive_count, sample_count, alignment_error
+    return MusicMetadata(
+        key=key,
+        bpm=bpm,
+        delay=delay,
+        positive_count=positive_count,
+        sample_count=sample_count,
+        alignment_error=alignment_error,
+    )
+
+
+def load_song_metadata(path: Path) -> dict[str, object]:
+    """Load an existing song metadata object so instrument workflows can merge."""
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read metadata JSON: {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Metadata JSON root must be an object: {path}")
+    return payload
+
+
+def update_song_metadata(
+    path: Path,
+    *,
+    audio: str | None = None,
+    beats: list[float] | None = None,
+    downbeats: list[float] | None = None,
+    instrument: str | None = None,
+    instrument_metadata: MusicMetadata | None = None,
+) -> None:
+    """Merge beat or instrument analysis into ``歌名_meta.json``."""
+    payload = load_song_metadata(path)
+    if audio is not None:
+        payload["audio"] = audio
+    if beats is not None:
+        payload["beats"] = beats
+    if downbeats is not None:
+        payload["downbeats"] = downbeats
+    if instrument is not None:
+        if instrument_metadata is None:
+            raise ValueError("instrument_metadata is required when instrument is set")
+        instruments = payload.setdefault("instruments", {})
+        if not isinstance(instruments, dict):
+            raise RuntimeError(f"Metadata field 'instruments' must be an object: {path}")
+        instruments[instrument] = instrument_metadata.to_dict()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 def main() -> None:
     configure_logging()
     parser = argparse.ArgumentParser(
-        description="Estimate MIDI key/BPM, write one tempo, and apply one global timing offset."
+        description="Estimate MIDI key, BPM, and grid delay without modifying MIDI."
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--instrument", default="unknown")
     parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args()
     config = load_config(args.config).require_music_metadata()
     if mido is None:
         raise SystemExit("Missing dependency: run `uv sync` from the project root")
-    files = sorted(args.input.glob("*.mid")) + sorted(args.input.glob("*.midi"))
+
+    input_path = args.input.expanduser().resolve()
+    files = (
+        [input_path]
+        if input_path.is_file()
+        else sorted(input_path.glob("*.mid")) + sorted(input_path.glob("*.midi"))
+    )
     if not files:
-        raise SystemExit(f"No MIDI files found in {args.input.resolve()}")
+        raise SystemExit(f"No MIDI files found in {input_path}")
+
+    output_path = args.output.expanduser().resolve()
     for source in files:
-        destination = args.output / source.name
-        key, bpm, delay, positive_count, sample_count, alignment_error = normalize_file(
-            source,
-            destination,
-            config.alignment_sample_count,
+        metadata = analyze_file(source, config.alignment_sample_count)
+        destination = (
+            output_path
+            if len(files) == 1 and output_path.suffix.lower() == ".json"
+            else output_path / f"{source.stem}_meta.json"
         )
-        negative_count = sample_count - positive_count
-        average_error = alignment_error / sample_count if sample_count else 0.0
+        update_song_metadata(
+            destination,
+            instrument=args.instrument,
+            instrument_metadata=metadata,
+        )
         logger.info(
-            "%s: key=%s, bpm=%.2f, delay=%.1fms, positive=%d/%d, "
-            "negative=%d/%d, error=%.1fms, average_error=%.1fms -> %s",
+            "%s: key=%s, bpm=%.2f, delay=%.1fms -> %s",
             source.name,
-            key,
-            bpm,
-            delay * 1000,
-            positive_count,
-            sample_count,
-            negative_count,
-            sample_count,
-            alignment_error * 1000,
-            average_error * 1000,
+            metadata.key,
+            metadata.bpm,
+            metadata.delay * 1000,
             destination,
         )
 

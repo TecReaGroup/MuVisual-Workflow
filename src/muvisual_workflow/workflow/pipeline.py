@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 import mutagen
 
 from muvisual_workflow.audio_to_midi import AudioToMidiStep
-from muvisual_workflow.beat_detection import BeatDetector, write_result
+from muvisual_workflow.beat_detection import BeatDetector
 from muvisual_workflow.core.audio_conversion import convert_to_mp3
 from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
@@ -31,7 +31,10 @@ from muvisual_workflow.core.config import (
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DATA_DIR, PROJECT_ROOT
 from muvisual_workflow.midi_quantization import quantize_midi
-from muvisual_workflow.music_metadata import normalize_file
+from muvisual_workflow.music_metadata import (
+    analyze_file,
+    update_song_metadata,
+)
 
 DEFAULT_INPUT = DATA_DIR / "input"
 DEFAULT_OUTPUT = DATA_DIR / "output"
@@ -174,11 +177,11 @@ def expected_output_files(
     output_name: str,
     stem_instruments: tuple[str, ...],
     midi_instruments: tuple[str, ...],
-    beats_enabled: bool,
+    metadata_enabled: bool,
 ) -> tuple[Path, ...]:
     files = [directory / f"{output_name}.mp3"]
-    if beats_enabled:
-        files.append(directory / f"{output_name}_beat.json")
+    if metadata_enabled:
+        files.append(directory / f"{output_name}_meta.json")
     for instrument in stem_instruments:
         files.append(directory / instrument / f"{output_name}_{instrument}.mp3")
     for instrument in midi_instruments:
@@ -191,7 +194,7 @@ def output_is_complete(
     output_name: str,
     stem_instruments: tuple[str, ...] | None,
     midi_instruments: tuple[str, ...],
-    beats_enabled: bool,
+    metadata_enabled: bool,
 ) -> bool:
     if stem_instruments is None:
         return False
@@ -203,7 +206,7 @@ def output_is_complete(
             output_name,
             stem_instruments,
             midi_instruments,
-            beats_enabled,
+            metadata_enabled,
         )
     )
 
@@ -247,10 +250,15 @@ def generate_beats(
         return
     detector = BeatDetector(config.model, config.device, config.dbn)
     try:
-        write_result(detector, source, destination, audio_reference)
+        beats, downbeats = detector.detect(source)
+        update_song_metadata(
+            destination,
+            audio=audio_reference,
+            beats=[float(value) for value in beats],
+            downbeats=[float(value) for value in downbeats],
+        )
     finally:
         release_beat_detector(detector)
-
 
 def store_stem_audio(
     instrument: str,
@@ -304,6 +312,7 @@ def process_audio(
             raise RuntimeError(f"Output path is not a directory: {destination_dir}")
         shutil.copytree(destination_dir, result_dir, dirs_exist_ok=True)
     original_name = f"{output_name}.mp3"
+    (result_dir / f"{output_name}_beat.json").unlink(missing_ok=True)
     convert_to_mp3(source, result_dir / original_name)
     logger.info("Stored original audio: %s", result_dir / original_name)
 
@@ -312,7 +321,8 @@ def process_audio(
     instrument_configs = (
         config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
     )
-    beats_enabled = False
+    metadata_path = result_dir / f"{output_name}_meta.json"
+    metadata_enabled = False
 
     for workflow_step in config.workflow:
         logger.info(
@@ -322,10 +332,10 @@ def process_audio(
         )
         if workflow_step.name == "beat_detection":
             beat_config = config.require_beat_detection()
-            beats_enabled = beat_config.enabled
+            metadata_enabled = beat_config.enabled
             generate_beats(
                 source,
-                result_dir / f"{output_name}_beat.json",
+                metadata_path,
                 beat_config,
                 original_name,
             )
@@ -388,21 +398,26 @@ def process_audio(
             if not midi_files:
                 raise RuntimeError("music_metadata requires audio_to_midi output")
             metadata_config = config.require_music_metadata()
+            metadata_enabled = True
             for instrument, midi_path in midi_files.items():
-                key, bpm, delay, _, _, _ = normalize_file(
-                    midi_path,
+                metadata = analyze_file(
                     midi_path,
                     metadata_config.alignment_sample_count,
+                )
+                update_song_metadata(
+                    metadata_path,
+                    audio=original_name,
+                    instrument=instrument,
+                    instrument_metadata=metadata,
                 )
                 logger.info(
                     "Recognized music metadata for %s: key=%s, bpm=%.2f, delay=%.1f ms",
                     instrument,
-                    key,
-                    bpm,
-                    delay * 1000,
+                    metadata.key,
+                    metadata.bpm,
+                    metadata.delay * 1000,
                 )
             continue
-
         if workflow_step.name == "midi_quantization":
             if not midi_files:
                 raise RuntimeError("midi_quantization requires music_metadata output")
@@ -426,7 +441,7 @@ def process_audio(
             output_name,
             tuple(stems),
             tuple(instrument_configs),
-            beats_enabled,
+            metadata_enabled,
         )
         if not path.is_file()
     ]
@@ -519,7 +534,7 @@ def main() -> None:
         expected_model_stems(separation_model) if separation_model is not None else ()
     )
     midi_instruments = tuple(instrument_configs)
-    beats_enabled = (
+    metadata_enabled = config.has_step("music_metadata") or (
         config.beat_detection.enabled if config.beat_detection is not None else False
     )
     processed_count = 0
@@ -533,7 +548,7 @@ def main() -> None:
                 output_name,
                 stem_instruments,
                 midi_instruments,
-                beats_enabled,
+                metadata_enabled,
             ):
                 skipped_count += 1
                 logger.info(
