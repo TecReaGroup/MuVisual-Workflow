@@ -90,9 +90,10 @@ class ChordRecognitionConfig:
 
 @dataclass(frozen=True)
 class MusicMetadataConfig:
+    option: str
     enabled: bool
-    key_bpm_delay: KeyBpmDelayConfig
-    chord_recognition: ChordRecognitionConfig
+    key_bpm_delay: KeyBpmDelayConfig | None = None
+    chord_recognition: ChordRecognitionConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ class MuVisualConfig:
     workflow: tuple[WorkflowStep, ...]
     separation: SeparationConfig | None = None
     audio_to_midi: AudioToMidiConfig | None = None
-    music_metadata: MusicMetadataConfig | None = None
+    music_metadata: tuple[MusicMetadataConfig, ...] = ()
     midi_quantization: MidiQuantizationConfig | None = None
     beat_detection: BeatDetectionConfig | None = None
 
@@ -138,10 +139,13 @@ class MuVisualConfig:
             raise ValueError("The workflow does not configure the audio_to_midi step")
         return self.audio_to_midi
 
-    def require_music_metadata(self) -> MusicMetadataConfig:
-        if self.music_metadata is None:
-            raise ValueError("The workflow does not configure the music_metadata step")
-        return self.music_metadata
+    def require_music_metadata(self, option: str) -> MusicMetadataConfig:
+        for metadata_config in self.music_metadata:
+            if metadata_config.option == option:
+                return metadata_config
+        raise ValueError(
+            f"The workflow does not configure music_metadata option {option!r}"
+        )
 
     def require_midi_quantization(self) -> MidiQuantizationConfig:
         if self.midi_quantization is None:
@@ -276,7 +280,7 @@ def _load_workflow(payload: dict[str, Any]) -> tuple[WorkflowStep, ...]:
         if step not in SUPPORTED_STEPS:
             supported = ", ".join(SUPPORTED_STEPS)
             raise ValueError(f"Unsupported workflow step {step!r}; supported: {supported}")
-        if step in seen:
+        if step in seen and step != "music_metadata":
             raise ValueError(f"Workflow step {step!r} is configured more than once")
         unexpected = set(entry) - {"step", "option"}
         if unexpected:
@@ -406,70 +410,54 @@ def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
     if step.name == "audio_to_midi":
         return _parse_audio_to_midi(source, payload)
     if step.name == "music_metadata":
-        key_payload = _mapping(
-            payload.get("key_bpm_delay", {}),
-            f"{source}.key_bpm_delay",
-        )
-        chord_payload = _mapping(
-            payload.get("chord_recognition", {}),
-            f"{source}.chord_recognition",
-        )
-        chord_algorithm = _name(
-            chord_payload.get("algorithm", "chord_cnn_lstm"),
-            f"{source}.chord_recognition.algorithm",
-        ).casefold()
-        if chord_algorithm != "chord_cnn_lstm":
-            raise ValueError(
-                f"{source}.chord_recognition.algorithm must be chord_cnn_lstm"
+        if step.option == "key_bpm_delay":
+            return MusicMetadataConfig(
+                option=step.option,
+                enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+                key_bpm_delay=KeyBpmDelayConfig(
+                    enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+                    algorithm="key_bpm_delay",
+                    alignment_sample_count=_positive_int(
+                        payload.get("alignment_sample_count", 35),
+                        f"{source}.alignment_sample_count",
+                    ),
+                ),
             )
-        chord_dictionary = _name(
-            chord_payload.get("chord_dictionary", "submission"),
-            f"{source}.chord_recognition.chord_dictionary",
-        ).casefold()
-        supported = {"submission", "ismir2017", "full", "extended"}
-        if chord_dictionary not in supported:
-            raise ValueError(
-                f"{source}.chord_recognition.chord_dictionary must be one of: "
-                + ", ".join(sorted(supported))
+        if step.option == "chord_recognition":
+            algorithm = _name(
+                payload.get("algorithm", "chord_cnn_lstm"),
+                f"{source}.algorithm",
+            ).casefold()
+            if algorithm != "chord_cnn_lstm":
+                raise ValueError(f"{source}.algorithm must be chord_cnn_lstm")
+            chord_dictionary = _name(
+                payload.get("chord_dictionary", "submission"),
+                f"{source}.chord_dictionary",
+            ).casefold()
+            supported = {"submission", "ismir2017", "full", "extended"}
+            if chord_dictionary not in supported:
+                raise ValueError(
+                    f"{source}.chord_dictionary must be one of: "
+                    + ", ".join(sorted(supported))
+                )
+            return MusicMetadataConfig(
+                option=step.option,
+                enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+                chord_recognition=ChordRecognitionConfig(
+                    enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+                    algorithm=algorithm,
+                    repository_path=Path(
+                        _string(
+                            payload.get("repository_path", "data/model/chord_cnn_lstm"),
+                            f"{source}.repository_path",
+                        )
+                    ),
+                    chord_dictionary=chord_dictionary,
+                ),
             )
-        key_algorithm = _name(
-            key_payload.get("algorithm", "key_bpm_delay"),
-            f"{source}.key_bpm_delay.algorithm",
-        ).casefold()
-        if key_algorithm != "key_bpm_delay":
-            raise ValueError(
-                f"{source}.key_bpm_delay.algorithm must be key_bpm_delay"
-            )
-        return MusicMetadataConfig(
-            enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
-            key_bpm_delay=KeyBpmDelayConfig(
-                enabled=_boolean(
-                    key_payload.get("enabled", True),
-                    f"{source}.key_bpm_delay.enabled",
-                ),
-                algorithm=key_algorithm,
-                alignment_sample_count=_positive_int(
-                    key_payload.get("alignment_sample_count", 35),
-                    f"{source}.key_bpm_delay.alignment_sample_count",
-                ),
-            ),
-            chord_recognition=ChordRecognitionConfig(
-                enabled=_boolean(
-                    chord_payload.get("enabled", True),
-                    f"{source}.chord_recognition.enabled",
-                ),
-                algorithm=chord_algorithm,
-                repository_path=Path(
-                    _string(
-                        chord_payload.get(
-                            "repository_path",
-                            "data/model/chord_cnn_lstm",
-                        ),
-                        f"{source}.chord_recognition.repository_path",
-                    )
-                ),
-                chord_dictionary=chord_dictionary,
-            ),
+        raise ValueError(
+            f"Unsupported music_metadata option: {step.option}; "
+            "expected key_bpm_delay or chord_recognition"
         )
     if step.name == "midi_quantization":
         return MidiQuantizationConfig(
@@ -509,10 +497,15 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
     config_root = workflow_path.parent
 
     loaded: dict[str, object] = {}
+    metadata_configs: list[MusicMetadataConfig] = []
     for step in workflow:
         option_path = config_root / step.name / f"{step.option}.yaml"
         payload = _load_yaml(option_path, f"Configuration option for {step.name}")
-        loaded[step.name] = _parse_step_option(step, payload)
+        parsed = _parse_step_option(step, payload)
+        if step.name == "music_metadata":
+            metadata_configs.append(cast(MusicMetadataConfig, parsed))
+        else:
+            loaded[step.name] = parsed
 
     audio_to_midi = cast(AudioToMidiConfig | None, loaded.get("audio_to_midi"))
     if audio_to_midi is not None:
@@ -530,7 +523,7 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
         workflow=workflow,
         separation=cast(SeparationConfig | None, loaded.get("separation")),
         audio_to_midi=audio_to_midi,
-        music_metadata=cast(MusicMetadataConfig | None, loaded.get("music_metadata")),
+        music_metadata=tuple(metadata_configs),
         midi_quantization=cast(MidiQuantizationConfig | None, loaded.get("midi_quantization")),
         beat_detection=cast(BeatDetectionConfig | None, loaded.get("beat_detection")),
     )

@@ -425,12 +425,12 @@ def process_audio(
             continue
 
         if workflow_step.name == "music_metadata":
-            metadata_config = config.require_music_metadata()
-            metadata_enabled = metadata_config.enabled
+            metadata_config = config.require_music_metadata(workflow_step.option)
+            metadata_enabled = metadata_enabled or metadata_config.enabled
             if not metadata_config.enabled:
                 continue
 
-            if metadata_config.chord_recognition.enabled:
+            if metadata_config.chord_recognition is not None:
                 if not detected_beats:
                     raise RuntimeError(
                         "music_metadata chord recognition requires enabled "
@@ -451,7 +451,7 @@ def process_audio(
                     len(chord_payload["segments"]),
                 )
 
-            if metadata_config.key_bpm_delay.enabled:
+            if metadata_config.key_bpm_delay is not None:
                 if not midi_files:
                     raise RuntimeError(
                         "music_metadata key_bpm_delay requires audio_to_midi output"
@@ -592,10 +592,8 @@ def main() -> None:
         expected_model_stems(separation_model) if separation_model is not None else ()
     )
     midi_instruments = tuple(instrument_configs)
-    metadata_enabled = (
-        config.music_metadata.enabled
-        if config.music_metadata is not None
-        else False
+    metadata_enabled = any(
+        metadata_config.enabled for metadata_config in config.music_metadata
     ) or (
         config.beat_detection.enabled if config.beat_detection is not None else False
     )

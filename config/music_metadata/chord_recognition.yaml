@@ -1,0 +1,4 @@
+enabled: true
+algorithm: chord_cnn_lstm
+repository_path: data/model/chord_cnn_lstm
+chord_dictionary: submission

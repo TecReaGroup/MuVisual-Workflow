@@ -314,7 +314,7 @@ def main() -> None:
     parser.add_argument("--instrument", default="unknown")
     parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args()
-    config = load_config(args.config).require_music_metadata()
+    config = load_config(args.config).require_music_metadata("key_bpm_delay")
     if mido is None:
         raise SystemExit("Missing dependency: run `uv sync` from the project root")
 
