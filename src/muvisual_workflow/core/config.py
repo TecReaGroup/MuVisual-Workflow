@@ -11,7 +11,7 @@ import yaml
 
 from muvisual_workflow.core.paths import PROJECT_ROOT
 
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "workflow_piano.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "workflow.yaml"
 SUPPORTED_STEPS = (
     "beat_detection",
     "separation",

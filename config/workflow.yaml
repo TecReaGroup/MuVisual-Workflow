@@ -1,0 +1,9 @@
+enabled: true
+overwrite: false
+instrument: main
+
+workflow:
+  - step: beat_detection
+    option: madmom
+  - step: music_metadata
+    option: chord_recognition

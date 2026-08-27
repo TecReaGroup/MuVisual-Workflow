@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Instrument workflow YAML file (default: config/workflow_piano.yaml)",
+        help="Workflow YAML file (default: config/workflow.yaml plus enabled instrument workflows)",
     )
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
@@ -668,7 +668,8 @@ def main() -> None:
     config_paths = (
         [args.config.expanduser().resolve()]
         if args.config is not None
-        else sorted(DEFAULT_CONFIG_PATH.parent.glob("workflow_*.yaml"))
+        else [DEFAULT_CONFIG_PATH]
+        + sorted(DEFAULT_CONFIG_PATH.parent.glob("workflow_*.yaml"))
     )
     if not config_paths:
         raise SystemExit(f"No workflow configuration files found in: {DEFAULT_CONFIG_PATH.parent}")

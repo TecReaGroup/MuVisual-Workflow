@@ -3,7 +3,11 @@ overwrite: false
 instrument: other
 
 workflow:
+  - step: separation
+    option: bs_roformer_sw
   - step: audio_to_midi
     option: muscriptor_other
+  - step: music_metadata
+    option: key_bpm_delay
   - step: midi_quantization
     option: default

@@ -3,13 +3,11 @@ overwrite: false
 instrument: piano
 
 workflow:
-  - step: beat_detection
-    option: madmom
   - step: separation
     option: bs_roformer_sw
   - step: audio_to_midi
     option: muscriptor_piano
   - step: music_metadata
-    option: chord_recognition
+    option: key_bpm_delay
   - step: midi_quantization
     option: default
