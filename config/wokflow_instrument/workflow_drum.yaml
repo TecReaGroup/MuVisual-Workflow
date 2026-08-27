@@ -1,6 +1,6 @@
 enabled: false
 overwrite: false
-instrument: drums
+instrument: drum
 
 workflow:
   - step: audio_to_midi

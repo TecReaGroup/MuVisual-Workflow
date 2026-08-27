@@ -1,9 +1,9 @@
-default_instrument: drums
+default_instrument: drum
 device: auto
 dtype: auto
 
 instruments:
-  drums:
+  drum:
     model: muscriptor
     checkpoint: medium
     target_instruments:

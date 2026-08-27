@@ -25,6 +25,7 @@ from muvisual_workflow.core.config import (
     AudioToMidiConfig,
     BeatDetectionConfig,
     DEFAULT_CONFIG_PATH,
+    WORKFLOW_INSTRUMENT_DIR,
     InstrumentAudioToMidiConfig,
     MuVisualConfig,
     load_config,
@@ -76,7 +77,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Workflow YAML file (default: config/workflow.yaml plus enabled instrument workflows)",
+        help="Workflow YAML file (default: config/workflow.yaml plus its ordered instruments)",
     )
     parser.add_argument("--segment-hop-size", type=int, default=None)
     parser.add_argument("--segment-size", type=int, default=None)
@@ -665,19 +666,24 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
 def main() -> None:
     configure_logging()
     args = parse_args()
-    config_paths = (
-        [args.config.expanduser().resolve()]
-        if args.config is not None
-        else [DEFAULT_CONFIG_PATH]
-        + sorted(DEFAULT_CONFIG_PATH.parent.glob("workflow_*.yaml"))
-    )
-    if not config_paths:
-        raise SystemExit(f"No workflow configuration files found in: {DEFAULT_CONFIG_PATH.parent}")
+    if args.config is not None:
+        configs = [load_config(args.config.expanduser().resolve())]
+    else:
+        main_config = load_config(DEFAULT_CONFIG_PATH)
+        configs = [main_config]
+        for instrument in main_config.instrument_order:
+            instrument_path = WORKFLOW_INSTRUMENT_DIR / f"workflow_{instrument}.yaml"
+            instrument_config = load_config(instrument_path)
+            if instrument_config.instrument != instrument:
+                raise ValueError(
+                    f"Instrument workflow {instrument_path} configures "
+                    f"{instrument_config.instrument!r}, expected {instrument!r}"
+                )
+            configs.append(instrument_config)
 
-    configs = [load_config(path) for path in config_paths]
     enabled_configs = [config for config in configs if config.enabled]
     if not enabled_configs:
-        logger.info("No enabled instrument workflows found")
+        logger.info("No enabled workflows found")
         return
 
     for config in enabled_configs:

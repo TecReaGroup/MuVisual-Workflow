@@ -7,3 +7,12 @@ workflow:
     option: beat_this
   - step: music_metadata
     option: chord_recognition
+  - step: separation
+    option: bs_roformer_sw
+
+instruments:
+  - bass
+  - drum
+  - guitar
+  - other
+  - piano

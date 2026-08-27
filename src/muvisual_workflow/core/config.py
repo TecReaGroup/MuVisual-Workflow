@@ -12,6 +12,7 @@ import yaml
 from muvisual_workflow.core.paths import PROJECT_ROOT
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "workflow.yaml"
+WORKFLOW_INSTRUMENT_DIR = DEFAULT_CONFIG_PATH.parent / "wokflow_instrument"
 SUPPORTED_STEPS = (
     "beat_detection",
     "separation",
@@ -123,6 +124,7 @@ class MuVisualConfig:
     enabled: bool
     overwrite: bool
     instrument: str
+    instrument_order: tuple[str, ...]
     workflow: tuple[WorkflowStep, ...]
     separation: SeparationConfig | None = None
     audio_to_midi: AudioToMidiConfig | None = None
@@ -183,6 +185,21 @@ def _name(value: object, field_name: str) -> str:
             f"{field_name} may only contain letters, numbers, underscores, and hyphens"
         )
     return name
+
+
+def _instrument_order(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError("instruments must be a list")
+
+    instrument_order = tuple(
+        _name(instrument, f"instruments[{index}]").casefold()
+        for index, instrument in enumerate(value)
+    )
+    if len(set(instrument_order)) != len(instrument_order):
+        raise ValueError("instruments must not contain duplicates")
+    return instrument_order
 
 
 def _boolean(value: object, field_name: str) -> bool:
@@ -496,7 +513,7 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
     """Load a workflow file and each selected config/<step>/<option>.yaml file."""
     workflow_path = (path or DEFAULT_CONFIG_PATH).expanduser().resolve()
     workflow_payload = _load_yaml(workflow_path, "Workflow configuration")
-    unexpected = set(workflow_payload) - {"enabled", "overwrite", "instrument", "workflow"}
+    unexpected = set(workflow_payload) - {"enabled", "overwrite", "instrument", "instruments", "workflow"}
     if unexpected:
         raise ValueError(
             "Workflow configuration has unsupported fields: "
@@ -508,8 +525,15 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
         workflow_payload.get("instrument"),
         "instrument",
     ).casefold()
+    instrument_order = _instrument_order(workflow_payload.get("instruments"))
+    if instrument != "main" and instrument_order:
+        raise ValueError("Only the main workflow may configure instruments")
     workflow = _load_workflow(workflow_payload)
-    config_root = workflow_path.parent
+    config_root = (
+        DEFAULT_CONFIG_PATH.parent
+        if workflow_path.parent == WORKFLOW_INSTRUMENT_DIR
+        else workflow_path.parent
+    )
 
     loaded: dict[str, object] = {}
     metadata_configs: list[MusicMetadataConfig] = []
@@ -536,6 +560,7 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
         enabled=enabled,
         overwrite=overwrite,
         instrument=instrument,
+        instrument_order=instrument_order,
         workflow=workflow,
         separation=cast(SeparationConfig | None, loaded.get("separation")),
         audio_to_midi=audio_to_midi,
