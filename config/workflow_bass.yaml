@@ -3,11 +3,7 @@ overwrite: false
 instrument: bass
 
 workflow:
-  - step: separation
-    option: bs_roformer_sw
   - step: audio_to_midi
     option: muscriptor_bass
-  - step: music_metadata
-    option: key_bpm_delay
   - step: midi_quantization
     option: default

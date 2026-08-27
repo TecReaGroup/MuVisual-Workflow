@@ -4,6 +4,6 @@ instrument: main
 
 workflow:
   - step: beat_detection
-    option: madmom
+    option: beat_this
   - step: music_metadata
     option: chord_recognition
