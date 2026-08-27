@@ -1,4 +1,3 @@
-enabled: true
 algorithm: madmom
 minimum_bpm: 55.0
 maximum_bpm: 180.0

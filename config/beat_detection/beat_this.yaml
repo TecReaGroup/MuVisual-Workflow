@@ -1,4 +1,3 @@
-enabled: true
 algorithm: beat_this
 model: final0
 device: auto
