@@ -14,7 +14,7 @@ import mutagen
 
 from muvisual_workflow.audio_to_midi import AudioToMidiStep
 from muvisual_workflow.beat_detection import BeatDetector, MadmomBeatDetector
-from muvisual_workflow.core.audio_conversion import convert_to_mp3
+from muvisual_workflow.core.audio_conversion import convert_to_mp3, convert_to_wav
 from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
     apply_noise_gate,
@@ -46,6 +46,7 @@ logger = get_logger("pipeline")
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 STEM_LABEL = re.compile(r"\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
 BS_ROFORMER_SW_STEMS = ("bass", "drums", "guitar", "other", "piano", "vocals")
+CONFIGURED_INSTRUMENT_STEM_NAMES = {"drum": "drums"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -304,6 +305,26 @@ def store_stem_audio(
     logger.info("Stored separated stem: %s", audio_path)
 
 
+
+def restore_configured_stems(
+    result_dir: Path,
+    stem_dir: Path,
+    output_name: str,
+    instruments: tuple[str, ...],
+) -> dict[str, Path]:
+    """Decode separated audio saved by the main workflow for transcription."""
+    restored_stems: dict[str, Path] = {}
+    for instrument in instruments:
+        stem_name = CONFIGURED_INSTRUMENT_STEM_NAMES.get(instrument, instrument)
+        stored_stem = result_dir / stem_name / f"{output_name}_{stem_name}.mp3"
+        if not stored_stem.is_file():
+            continue
+        restored_stem = stem_dir / f"{instrument}.wav"
+        convert_to_wav(stored_stem, restored_stem)
+        restored_stems[instrument] = restored_stem
+        logger.info("Restored separated stem for transcription: %s", restored_stem)
+    return restored_stems
+
 def transcribe_instrument(
     instrument: str,
     stem_path: Path,
@@ -347,11 +368,16 @@ def process_audio(
     convert_to_mp3(source, result_dir / original_name)
     logger.info("Stored original audio: %s", result_dir / original_name)
 
-    stems: dict[str, Path] = {}
-    midi_files: dict[str, Path] = {}
     instrument_configs = (
         config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
     )
+    stems = restore_configured_stems(
+        result_dir,
+        stem_dir,
+        output_name,
+        tuple(instrument_configs),
+    )
+    midi_files: dict[str, Path] = {}
     metadata_path = result_dir / f"{output_name}_meta.json"
     metadata_enabled = False
     detected_beats: list[float] = []
@@ -501,12 +527,17 @@ def process_audio(
 
         raise RuntimeError(f"Unsupported workflow step: {workflow_step.name}")
 
+    stored_stem_instruments = (
+        tuple(stems)
+        if config.separation is not None and config.separation.enabled
+        else ()
+    )
     missing = [
         path
         for path in expected_output_files(
             result_dir,
             output_name,
-            tuple(stems),
+            stored_stem_instruments,
             tuple(instrument_configs),
             metadata_enabled,
         )
