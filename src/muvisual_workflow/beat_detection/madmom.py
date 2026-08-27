@@ -10,6 +10,8 @@ import warnings
 
 import numpy as np
 
+from muvisual_workflow.beat_detection.octave import normalize_beat_octaves
+
 
 @dataclass(frozen=True)
 class MadmomBeatResult:
@@ -37,18 +39,8 @@ def _bpm(beats: list[float], fallback: float = 120.0) -> float:
     return 60.0 / float(np.median(intervals)) if len(intervals) else fallback
 
 
-def _insert_midpoints(beats: list[float]) -> list[float]:
-    if len(beats) < 2:
-        return beats.copy()
-    result: list[float] = []
-    for left, right in zip(beats, beats[1:]):
-        result.extend((left, left + (right - left) * 0.5))
-    result.append(beats[-1])
-    return result
-
-
 class MadmomBeatDetector:
-    """Run madmom and correct DBN output that is one octave too slow."""
+    """Run madmom and normalize transient half-time or double-time segments."""
 
     def __init__(self, minimum_bpm: float = 90.0, maximum_bpm: float = 180.0) -> None:
         if minimum_bpm <= 0 or maximum_bpm <= minimum_bpm:
@@ -65,14 +57,23 @@ class MadmomBeatDetector:
             except ImportError as exc:
                 raise RuntimeError("madmom is not installed; run `uv sync`") from exc
         activations = RNNBeatProcessor()(str(audio_path))
-        raw_beats = [float(value) for value in DBNBeatTrackingProcessor(fps=100)(activations)]
+        processor = DBNBeatTrackingProcessor(
+            min_bpm=self.minimum_bpm,
+            max_bpm=self.maximum_bpm,
+            fps=100,
+        )
+        raw_beats = [float(value) for value in processor(activations)]
+        raw_downbeats = raw_beats[::4]
         raw_bpm = _bpm(raw_beats)
-        doubled = raw_bpm < self.minimum_bpm and raw_bpm * 2 <= self.maximum_bpm
-        beats = _insert_midpoints(raw_beats) if doubled else raw_beats
+        beats, downbeats = normalize_beat_octaves(raw_beats, raw_downbeats)
+        bpm = _bpm(beats, raw_bpm)
+        if bpm > self.maximum_bpm:
+            beats, downbeats, bpm = raw_beats, raw_downbeats, raw_bpm
+        doubled = bpm > raw_bpm * 1.5
         return MadmomBeatResult(
             beats=beats,
-            downbeats=beats[::4],
-            bpm=_bpm(beats, raw_bpm),
+            downbeats=downbeats,
+            bpm=bpm,
             raw_bpm=raw_bpm,
             doubled_bpm=doubled,
         )
