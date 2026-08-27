@@ -52,6 +52,7 @@ data/model/*
 !data/model/.gitkeep
 log/*
 !log/.gitkeep
+data/audio/*
 
 temp/
 vps-sync/

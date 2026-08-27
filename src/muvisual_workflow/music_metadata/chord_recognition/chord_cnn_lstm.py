@@ -12,10 +12,13 @@ from tempfile import TemporaryDirectory
 
 from muvisual_workflow.core.config import ChordRecognitionConfig
 from muvisual_workflow.core.paths import PROJECT_ROOT
+from muvisual_workflow.core.logging import get_logger
 
 INFERENCE_SCRIPT = Path("chord_recognition.py")
 CHECKPOINTS = tuple(Path("cache_data") / f"joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s{index}.best.sdict" for index in range(5))
 LEGACY_RUNNER = Path(__file__).with_name("legacy.py")
+REPOSITORY_URL = "https://github.com/kuchin/chord-cnn-lstm-model.git"
+logger = get_logger("music_metadata.chord_recognition")
 
 
 @dataclass(frozen=True)
@@ -36,12 +39,44 @@ def resolve_repository(config: ChordRecognitionConfig) -> Path:
         *(repository / checkpoint for checkpoint in CHECKPOINTS),
     )
     missing = [path for path in required if not path.is_file()]
-    if missing:
+    if not missing:
+        return repository
+    if repository.exists():
         raise RuntimeError(
-            "Chord-CNN-LSTM model is not prepared under "
+            "Chord-CNN-LSTM model directory is incomplete under "
             f"{repository}: "
             + ", ".join(str(path.relative_to(repository)) for path in missing)
         )
+
+    repository.parent.mkdir(parents=True, exist_ok=True)
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError(
+            "Chord-CNN-LSTM is not prepared and git was not found on PATH: "
+            f"{repository}"
+        )
+    logger.info("Downloading Chord-CNN-LSTM model repository: %s", repository)
+    try:
+        subprocess.run(
+            [git, "clone", "--depth", "1", REPOSITORY_URL, str(repository)],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        if repository.is_dir():
+            shutil.rmtree(repository)
+        raise RuntimeError(
+            "Could not download Chord-CNN-LSTM model repository: "
+            f"{REPOSITORY_URL}"
+        ) from exc
+
+    missing = [path for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "Downloaded Chord-CNN-LSTM repository is incomplete under "
+            f"{repository}: "
+            + ", ".join(str(path.relative_to(repository)) for path in missing)
+        )
+    logger.info("Downloaded Chord-CNN-LSTM model repository: %s", repository)
     return repository
 
 
