@@ -1,7 +1,7 @@
 UV ?= uv
 VPS_SYNC_DIR ?= vps-sync
 
-.PHONY: push pull
+.PHONY: install hf run push pull modal-setup modal-deploy modal-api modal
 
 install:
 	$(UV) sync

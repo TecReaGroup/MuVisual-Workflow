@@ -40,6 +40,7 @@ class NoiseGateConfig:
 
 @dataclass(frozen=True)
 class SeparationConfig:
+    enabled: bool
     model: str
     noise_gate: NoiseGateConfig
 
@@ -58,6 +59,7 @@ class InstrumentAudioToMidiConfig:
 
 @dataclass(frozen=True)
 class AudioToMidiConfig:
+    enabled: bool
     default_instrument: str
     instruments: dict[str, InstrumentAudioToMidiConfig]
 
@@ -98,6 +100,7 @@ class MusicMetadataConfig:
 
 @dataclass(frozen=True)
 class MidiQuantizationConfig:
+    enabled: bool = True
     hand_split_note: int = 60
     simultaneous_threshold_ticks: int = 100
     minimum_note_ticks: int = 100
@@ -118,6 +121,7 @@ class BeatDetectionConfig:
 @dataclass(frozen=True)
 class MuVisualConfig:
     enabled: bool
+    overwrite: bool
     instrument: str
     workflow: tuple[WorkflowStep, ...]
     separation: SeparationConfig | None = None
@@ -291,18 +295,22 @@ def _load_workflow(payload: dict[str, Any]) -> tuple[WorkflowStep, ...]:
         seen.add(step)
 
     names = [step.name for step in workflow]
-    dependencies = {
-        "audio_to_midi": "separation",
-        "music_metadata": "audio_to_midi",
-        "midi_quantization": "music_metadata",
-    }
-    for step, dependency in dependencies.items():
-        if step not in seen:
-            continue
+    dependencies: list[tuple[str, str]] = []
+    for workflow_step in workflow:
+        if workflow_step.name == "music_metadata":
+            if workflow_step.option == "key_bpm_delay":
+                dependencies.append(("music_metadata:key_bpm_delay", "audio_to_midi"))
+            elif workflow_step.option == "chord_recognition":
+                dependencies.append(("music_metadata:chord_recognition", "beat_detection"))
+        elif workflow_step.name == "midi_quantization":
+            dependencies.append(("midi_quantization", "audio_to_midi"))
+
+    for step, dependency in dependencies:
+        step_name = step.split(":", maxsplit=1)[0]
         if dependency not in seen:
             raise ValueError(f"{step} requires the {dependency} step")
-        if names.index(step) < names.index(dependency):
-            raise ValueError(f"{dependency} must appear before {step} in workflow")
+        if names.index(step_name) < names.index(dependency):
+            raise ValueError(f"{dependency} must appear before {step}")
     return tuple(workflow)
 
 
@@ -372,7 +380,11 @@ def _parse_audio_to_midi(source: str, payload: dict[str, Any]) -> AudioToMidiCon
             f"{source}.default_instrument {default_instrument!r} is not configured; "
             f"available: {available}"
         )
-    return AudioToMidiConfig(default_instrument, instruments)
+    return AudioToMidiConfig(
+        enabled=_boolean(payload.get("enabled", True), f"{source}.enabled"),
+        default_instrument=default_instrument,
+        instruments=instruments,
+    )
 
 
 def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
@@ -380,6 +392,7 @@ def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
     if step.name == "separation":
         noise_gate_payload = _mapping(payload.get("noise_gate", {}), f"{source}.noise_gate")
         return SeparationConfig(
+            enabled=_boolean(payload.get('enabled', True), f'{source}.enabled'),
             model=_string(payload.get("model", "BS-Roformer-SW.ckpt"), f"{source}.model"),
             noise_gate=NoiseGateConfig(
                 enabled=_boolean(noise_gate_payload.get("enabled", True), f"{source}.noise_gate.enabled"),
@@ -461,6 +474,7 @@ def _parse_step_option(step: WorkflowStep, payload: dict[str, Any]) -> object:
         )
     if step.name == "midi_quantization":
         return MidiQuantizationConfig(
+            enabled=_boolean(payload.get('enabled', True), f'{source}.enabled'),
             hand_split_note=_midi_note(payload.get("hand_split_note", 60), f"{source}.hand_split_note"),
             simultaneous_threshold_ticks=_non_negative_int(
                 payload.get("simultaneous_threshold_ticks", 100),
@@ -482,13 +496,14 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
     """Load a workflow file and each selected config/<step>/<option>.yaml file."""
     workflow_path = (path or DEFAULT_CONFIG_PATH).expanduser().resolve()
     workflow_payload = _load_yaml(workflow_path, "Workflow configuration")
-    unexpected = set(workflow_payload) - {"enabled", "instrument", "workflow"}
+    unexpected = set(workflow_payload) - {"enabled", "overwrite", "instrument", "workflow"}
     if unexpected:
         raise ValueError(
             "Workflow configuration has unsupported fields: "
             + ", ".join(sorted(unexpected))
         )
     enabled = _boolean(workflow_payload.get("enabled", True), "enabled")
+    overwrite = _boolean(workflow_payload.get("overwrite", False), "overwrite")
     instrument = _name(
         workflow_payload.get("instrument"),
         "instrument",
@@ -519,6 +534,7 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
 
     return MuVisualConfig(
         enabled=enabled,
+        overwrite=overwrite,
         instrument=instrument,
         workflow=workflow,
         separation=cast(SeparationConfig | None, loaded.get("separation")),

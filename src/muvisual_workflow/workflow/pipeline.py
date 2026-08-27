@@ -24,6 +24,7 @@ from muvisual_workflow.separation import (
 from muvisual_workflow.core.config import (
     AudioToMidiConfig,
     BeatDetectionConfig,
+    DEFAULT_CONFIG_PATH,
     InstrumentAudioToMidiConfig,
     MuVisualConfig,
     load_config,
@@ -373,6 +374,9 @@ def process_audio(
 
         if workflow_step.name == "separation":
             separation_config = config.require_separation()
+            if not separation_config.enabled:
+                logger.info("Workflow step separation is disabled")
+                continue
             separator = create_separator(raw_stem_dir, separation_config.model)
             try:
                 output_files = separate_with_loaded_model(
@@ -402,13 +406,14 @@ def process_audio(
             continue
 
         if workflow_step.name == "audio_to_midi":
-            if not stems:
-                raise RuntimeError("audio_to_midi requires separation output")
             audio_to_midi_config = config.require_audio_to_midi()
+            if not audio_to_midi_config.enabled:
+                logger.info("Workflow step audio_to_midi is disabled")
+                continue
             missing_configured_stems = sorted(
                 set(audio_to_midi_config.instruments) - set(stems)
             )
-            if missing_configured_stems:
+            if missing_configured_stems and stems:
                 raise RuntimeError(
                     "Configured instruments were not produced by separation: "
                     + ", ".join(missing_configured_stems)
@@ -417,7 +422,7 @@ def process_audio(
                 logger.info("Transcribing configured instrument: %s", instrument)
                 midi_files[instrument] = transcribe_instrument(
                     instrument,
-                    stems[instrument],
+                    stems.get(instrument, source),
                     result_dir,
                     output_name,
                     instrument_config,
@@ -477,14 +482,17 @@ def process_audio(
                     )
             continue
         if workflow_step.name == "midi_quantization":
-            if not midi_files:
-                raise RuntimeError("midi_quantization requires music_metadata output")
             quantization_config = config.require_midi_quantization()
+            if not quantization_config.enabled:
+                logger.info("Workflow step midi_quantization is disabled")
+                continue
+            if not midi_files:
+                raise RuntimeError("midi_quantization requires audio_to_midi output")
             for instrument, midi_path in midi_files.items():
                 quantize_midi(
                     midi_path,
                     midi_path,
-                    stems[instrument],
+                    stems.get(instrument, source),
                     quantization_config,
                 )
                 logger.info("Quantized MIDI: %s", midi_path)
@@ -545,10 +553,8 @@ def resolve_runtime_config(
     return replace(config, separation=separation, audio_to_midi=audio_to_midi)
 
 
-def main() -> None:
-    configure_logging()
-    args = parse_args()
-    config = resolve_runtime_config(load_config(args.config), args)
+def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
+    config = resolve_runtime_config(config, args)
     if not config.enabled:
         logger.info("Instrument workflow %s is disabled", config.instrument)
         return
@@ -588,14 +594,18 @@ def main() -> None:
         else:
             unique_audio_files.append((source, output_name))
 
+    separation_enabled = config.separation is not None and config.separation.enabled
+    audio_to_midi_enabled = config.audio_to_midi is not None and config.audio_to_midi.enabled
     stem_instruments = (
-        expected_model_stems(separation_model) if separation_model is not None else ()
+        expected_model_stems(separation_model)
+        if separation_enabled and separation_model is not None
+        else ()
     )
-    midi_instruments = tuple(instrument_configs)
+    midi_instruments = tuple(instrument_configs) if audio_to_midi_enabled else ()
     metadata_enabled = any(
         metadata_config.enabled for metadata_config in config.music_metadata
     ) or (
-        config.beat_detection.enabled if config.beat_detection is not None else False
+        config.beat_detection is not None and config.beat_detection.enabled
     )
     processed_count = 0
     skipped_count = 0
@@ -603,7 +613,7 @@ def main() -> None:
         batch_work_dir = Path(temporary_dir)
         for index, (source, output_name) in enumerate(unique_audio_files, start=1):
             destination_dir = output_dir / output_name
-            if output_is_complete(
+            if not config.overwrite and output_is_complete(
                 output_dir,
                 output_name,
                 stem_instruments,
@@ -651,5 +661,25 @@ def main() -> None:
     )
 
 
+
+def main() -> None:
+    configure_logging()
+    args = parse_args()
+    config_paths = (
+        [args.config.expanduser().resolve()]
+        if args.config is not None
+        else sorted(DEFAULT_CONFIG_PATH.parent.glob("workflow_*.yaml"))
+    )
+    if not config_paths:
+        raise SystemExit(f"No workflow configuration files found in: {DEFAULT_CONFIG_PATH.parent}")
+
+    configs = [load_config(path) for path in config_paths]
+    enabled_configs = [config for config in configs if config.enabled]
+    if not enabled_configs:
+        logger.info("No enabled instrument workflows found")
+        return
+
+    for config in enabled_configs:
+        run_workflow(config, args)
 if __name__ == "__main__":
     main()
