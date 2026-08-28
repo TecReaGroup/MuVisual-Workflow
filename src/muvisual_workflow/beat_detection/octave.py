@@ -251,6 +251,12 @@ def _infer_meter(beats: list[float], downbeats: list[float]) -> int | None:
     return Counter(differences).most_common(1)[0][0]
 
 
+def infer_time_signature(beats: list[float], downbeats: list[float]) -> str | None:
+    """Infer a quarter-note time signature from beats between downbeats."""
+    meter = _infer_meter(beats, downbeats)
+    return f"{meter}/4" if meter is not None else None
+
+
 def _nearest_index(values: list[float], target: float) -> int:
     index = bisect_left(values, target)
     if index == 0:

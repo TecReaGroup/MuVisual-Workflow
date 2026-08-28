@@ -37,20 +37,28 @@ def corr(a: list[float], b: tuple[float, ...]) -> float:
     return num / (den_a * den_b) if den_a and den_b else 0.0
 
 
+def estimate_key_from_pitch_weights(weights: list[float]) -> str:
+    """Estimate a major or minor key from twelve pitch-class weights."""
+    if len(weights) != 12:
+        raise ValueError("Pitch-class weights must contain exactly 12 values")
+    if not any(weights):
+        return "Unknown"
+    scores = []
+    for root in range(12):
+        rotated = [weights[(root + index) % 12] for index in range(12)]
+        scores.append((corr(rotated, MAJOR_PROFILE), f"{NAMES[root]} major"))
+        scores.append((corr(rotated, MINOR_PROFILE), f"{NAMES[root]} minor"))
+    return max(scores, key=lambda item: item[0])[1]
+
+
 def estimate_key(mid: mido.MidiFile) -> str:
     weights = [0.0] * 12
     for track in mid.tracks:
         for msg in track:
             if msg.type == "note_on" and msg.velocity:
                 weights[msg.note % 12] += msg.velocity
-    if not any(weights):
-        return "Unknown"
-    scores = []
-    for root in range(12):
-        rotated = [weights[(root + i) % 12] for i in range(12)]
-        scores.append((corr(rotated, MAJOR_PROFILE), f"{NAMES[root]} major"))
-        scores.append((corr(rotated, MINOR_PROFILE), f"{NAMES[root]} minor"))
-    return max(scores, key=lambda item: item[0])[1]
+    return estimate_key_from_pitch_weights(weights)
+
 
 def tempo_map(mid: mido.MidiFile) -> list[tuple[int, int]]:
     events = [(0, mido.bpm2tempo(120))]
@@ -271,6 +279,8 @@ def update_song_metadata(
     beats: list[float] | None = None,
     downbeats: list[float] | None = None,
     beat_metadata: Mapping[str, object] | None = None,
+    time_signature: str | None = None,
+    key: str | None = None,
     chords: Mapping[str, object] | None = None,
     instrument: str | None = None,
     instrument_metadata: MusicMetadata | None = None,
@@ -285,6 +295,10 @@ def update_song_metadata(
         payload["downbeats"] = downbeats
     if beat_metadata is not None:
         payload["beat"] = dict(beat_metadata)
+    if time_signature is not None:
+        payload["time_signature"] = time_signature
+    if key is not None:
+        payload["key"] = key
     if chords is not None:
         payload["chords"] = dict(chords)
     if instrument is not None:

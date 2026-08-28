@@ -11,14 +11,40 @@ import sys
 from tempfile import TemporaryDirectory
 
 from muvisual_workflow.core.config import ChordRecognitionConfig
-from muvisual_workflow.core.paths import PROJECT_ROOT
 from muvisual_workflow.core.logging import get_logger
+from muvisual_workflow.core.paths import PROJECT_ROOT
+from muvisual_workflow.music_metadata.key_bpm_delay import (
+    estimate_key_from_pitch_weights,
+)
 
 INFERENCE_SCRIPT = Path("chord_recognition.py")
 CHECKPOINTS = tuple(Path("cache_data") / f"joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s{index}.best.sdict" for index in range(5))
 LEGACY_RUNNER = Path(__file__).with_name("legacy.py")
 REPOSITORY_URL = "https://github.com/kuchin/chord-cnn-lstm-model.git"
 logger = get_logger("music_metadata.chord_recognition")
+PITCH_CLASSES = {
+    "C": 0,
+    "B#": 0,
+    "C#": 1,
+    "Db": 1,
+    "D": 2,
+    "D#": 3,
+    "Eb": 3,
+    "E": 4,
+    "Fb": 4,
+    "E#": 5,
+    "F": 5,
+    "F#": 6,
+    "Gb": 6,
+    "G": 7,
+    "G#": 8,
+    "Ab": 8,
+    "A": 9,
+    "A#": 10,
+    "Bb": 10,
+    "B": 11,
+    "Cb": 11,
+}
 
 
 @dataclass(frozen=True)
@@ -111,6 +137,37 @@ def align_to_beats(segments: list[ChordSegment], beats: list[float]) -> list[dic
     return result
 
 
+def estimate_key(segments: list[ChordSegment]) -> str:
+    """Estimate the global key from duration-weighted recognized chords."""
+    pitch_weights = [0.0] * 12
+    for segment in segments:
+        if segment.chord == "N":
+            continue
+        root_name, _, quality = segment.chord.partition(":")
+        root = PITCH_CLASSES.get(root_name)
+        if root is None:
+            continue
+        duration = max(0.0, segment.end - segment.start)
+        if not duration:
+            continue
+        if quality.startswith(("min", "dim", "hdim")):
+            third = 3
+        elif quality.startswith(("sus2", "sus4")):
+            third = 2 if quality.startswith("sus2") else 5
+        else:
+            third = 4
+        fifth = (
+            6
+            if quality.startswith(("dim", "hdim"))
+            else 8
+            if quality.startswith("aug")
+            else 7
+        )
+        for interval, strength in ((0, 1.0), (third, 0.8), (fifth, 0.7)):
+            pitch_weights[(root + interval) % 12] += duration * strength
+    return estimate_key_from_pitch_weights(pitch_weights)
+
+
 def prepare_audio(source: Path, destination: Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -171,6 +228,7 @@ def recognize_chords(audio_path: Path, beats: list[float], config: ChordRecognit
     return {
         "model": "Chord CNN-LSTM ISMIR 2019",
         "dictionary": config.chord_dictionary,
+        "key": estimate_key(segments),
         "alignment": "nearest_beat_midpoint",
         "segments": [asdict(segment) for segment in segments],
         "beat_chords": align_to_beats(segments, beats),

@@ -10,7 +10,10 @@ import subprocess
 import tempfile
 from typing import Any
 
-from muvisual_workflow.beat_detection.octave import normalize_beat_octaves
+from muvisual_workflow.beat_detection.octave import (
+    infer_time_signature,
+    normalize_beat_octaves,
+)
 from muvisual_workflow.core.config import load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
 from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
@@ -151,14 +154,17 @@ def write_result(
     destination: Path,
     audio_reference: str | None = None,
 ) -> None:
-    beats, downbeats = detector.detect(source)
+    detected_beats, detected_downbeats = detector.detect(source)
+    beats = [float(value) for value in detected_beats]
+    downbeats = [float(value) for value in detected_downbeats]
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(
             {
                 "audio": audio_reference or str(source),
-                "beats": [float(value) for value in beats],
-                "downbeats": [float(value) for value in downbeats],
+                "beats": beats,
+                "downbeats": downbeats,
+                "time_signature": infer_time_signature(beats, downbeats),
             },
             ensure_ascii=False,
             indent=2,

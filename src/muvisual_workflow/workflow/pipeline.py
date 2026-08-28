@@ -14,6 +14,7 @@ import mutagen
 
 from muvisual_workflow.audio_to_midi import AudioToMidiStep
 from muvisual_workflow.beat_detection import BeatDetector, MadmomBeatDetector
+from muvisual_workflow.beat_detection.octave import infer_time_signature
 from muvisual_workflow.core.audio_conversion import convert_to_mp3, convert_to_wav
 from muvisual_workflow.separation import (
     AUDIO_EXTENSIONS,
@@ -278,16 +279,20 @@ def generate_beats(
     try:
         detected_beats, downbeats = detector.detect(source)
         beats = [float(value) for value in detected_beats]
+        normalized_downbeats = [float(value) for value in downbeats]
+        time_signature = infer_time_signature(beats, normalized_downbeats)
         update_song_metadata(
             destination,
             audio=audio_reference,
             beats=beats,
-            downbeats=[float(value) for value in downbeats],
+            downbeats=normalized_downbeats,
             beat_metadata={
                 "algorithm": "beat_this",
                 "model": config.model,
             },
+            time_signature=time_signature,
         )
+        logger.info("Detected time signature: %s", time_signature or "Unknown")
         return beats
     finally:
         release_beat_detector(detector)
@@ -476,10 +481,12 @@ def process_audio(
                 update_song_metadata(
                     metadata_path,
                     audio=original_name,
+                    key=str(chord_payload["key"]),
                     chords=chord_payload,
                 )
                 logger.info(
-                    "Recognized %d chord segment(s) with Chord-CNN-LSTM",
+                    "Recognized key %s and %d chord segment(s) with Chord-CNN-LSTM",
+                    chord_payload["key"],
                     len(chord_payload["segments"]),
                 )
 
