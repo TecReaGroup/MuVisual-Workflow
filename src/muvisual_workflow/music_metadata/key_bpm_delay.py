@@ -281,7 +281,7 @@ def update_song_metadata(
     beat_metadata: Mapping[str, object] | None = None,
     time_signature: str | None = None,
     key: str | None = None,
-    chords: Mapping[str, object] | None = None,
+    chords: object | None = None,
     instrument: str | None = None,
     instrument_metadata: MusicMetadata | None = None,
 ) -> None:
@@ -300,7 +300,7 @@ def update_song_metadata(
     if key is not None:
         payload["key"] = key
     if chords is not None:
-        payload["chords"] = dict(chords)
+        payload["chords"] = chords
     if instrument is not None:
         if instrument_metadata is None:
             raise ValueError("instrument_metadata is required when instrument is set")

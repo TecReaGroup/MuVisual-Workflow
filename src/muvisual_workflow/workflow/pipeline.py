@@ -263,13 +263,6 @@ def generate_beats(
                 audio=audio_reference,
                 beats=result.beats,
                 downbeats=result.downbeats,
-                beat_metadata={
-                    "algorithm": "madmom",
-                    "model": result.model,
-                    "bpm": result.bpm,
-                    "raw_bpm": result.raw_bpm,
-                    "doubled_bpm": result.doubled_bpm,
-                },
             )
             return result.beats
         finally:
@@ -286,10 +279,6 @@ def generate_beats(
             audio=audio_reference,
             beats=beats,
             downbeats=normalized_downbeats,
-            beat_metadata={
-                "algorithm": "beat_this",
-                "model": config.model,
-            },
             time_signature=time_signature,
         )
         logger.info("Detected time signature: %s", time_signature or "Unknown")
@@ -482,7 +471,7 @@ def process_audio(
                     metadata_path,
                     audio=original_name,
                     key=str(chord_payload["key"]),
-                    chords=chord_payload,
+                    chords=chord_payload["beat_chords"],
                 )
                 logger.info(
                     "Recognized key %s and %d chord segment(s) with Chord-CNN-LSTM",
