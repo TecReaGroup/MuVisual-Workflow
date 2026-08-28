@@ -7,7 +7,7 @@ install:
 	$(UV) sync
 
 hf:
-	$(UV) hf auth login
+	$(UV) run hf auth login --force
 
 # Full pipeline
 run:
