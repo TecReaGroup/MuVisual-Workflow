@@ -14,6 +14,5 @@ HUGGINGFACE_MODEL_CACHE_DIR = MODEL_CACHE_DIR / "huggingface"
 TORCH_MODEL_CACHE_DIR = MODEL_CACHE_DIR / "torch"
 DEVELOP_DATA_DIR = DATA_DIR / "develop"
 
-os.environ.setdefault("HF_HOME", str(HUGGINGFACE_MODEL_CACHE_DIR))
 os.environ.setdefault("HF_HUB_CACHE", str(HUGGINGFACE_MODEL_CACHE_DIR / "hub"))
 os.environ.setdefault("TORCH_HOME", str(TORCH_MODEL_CACHE_DIR))
