@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import os
 from pathlib import Path
 import shutil
@@ -44,6 +44,42 @@ PITCH_CLASSES = {
     "Bb": 10,
     "B": 11,
     "Cb": 11,
+}
+NATURAL_PITCH_CLASSES = {
+    "C": 0,
+    "D": 2,
+    "E": 4,
+    "F": 5,
+    "G": 7,
+    "A": 9,
+    "B": 11,
+}
+NOTE_LETTERS = ("C", "D", "E", "F", "G", "A", "B")
+CHORD_QUALITY_SYMBOLS = {
+    "maj": "",
+    "min": "m",
+    "maj7": "maj7",
+    "min7": "m7",
+    "7": "7",
+    "dim": "dim",
+    "dim7": "dim7",
+    "hdim7": "m7b5",
+    "aug": "aug",
+    "9": "9",
+    "maj9": "maj9",
+    "min9": "m9",
+    "11": "11",
+    "13": "13",
+    "sus2": "sus2",
+    "sus4": "sus4",
+    "sus4(b7)": "7sus4",
+}
+BASS_INTERVALS = {
+    "2": (2, 2),
+    "b3": (3, 3),
+    "3": (3, 4),
+    "5": (5, 7),
+    "b7": (7, 10),
 }
 
 
@@ -117,6 +153,40 @@ def read_segments(path: Path) -> list[ChordSegment]:
         except ValueError as exc:
             raise RuntimeError(f"Invalid chord LAB line {line_number}: {line!r}") from exc
     return segments
+
+
+def interval_bass_note(root: str, interval: str) -> str:
+    """Convert a scale-degree inversion into a conventionally spelled bass note."""
+    degree, semitones = BASS_INTERVALS[interval]
+    root_letter = root[0]
+    bass_letter = NOTE_LETTERS[(NOTE_LETTERS.index(root_letter) + degree - 1) % 7]
+    bass_pitch = (PITCH_CLASSES[root] + semitones) % 12
+    accidental = (bass_pitch - NATURAL_PITCH_CLASSES[bass_letter]) % 12
+    if accidental > 6:
+        accidental -= 12
+    suffix = "#" * accidental if accidental > 0 else "b" * -accidental
+    return f"{bass_letter}{suffix}"
+
+
+def normalize_chord_symbol(chord: str) -> str:
+    """Convert the model's Harte-style label to common chord-symbol notation."""
+    if chord == "N" or ":" not in chord:
+        return chord
+    root, quality = chord.split(":", maxsplit=1)
+    quality_name, separator, bass_interval = quality.partition("/")
+    quality_symbol = CHORD_QUALITY_SYMBOLS.get(quality_name, quality_name)
+    normalized = f"{root}{quality_symbol}"
+    if separator:
+        normalized += f"/{interval_bass_note(root, bass_interval)}"
+    return normalized
+
+
+def normalize_segments(segments: list[ChordSegment]) -> list[ChordSegment]:
+    """Normalize every recognized chord before exposing the final payload."""
+    return [
+        replace(segment, chord=normalize_chord_symbol(segment.chord))
+        for segment in segments
+    ]
 
 
 def align_to_beats(segments: list[ChordSegment], beats: list[float]) -> list[dict[str, int | float | str]]:
@@ -224,11 +294,13 @@ def recognize_chords(audio_path: Path, beats: list[float], config: ChordRecognit
         )
         if not lab_path.is_file():
             raise RuntimeError(f"Chord-CNN-LSTM did not create output: {lab_path}")
-        segments = read_segments(lab_path)
+        raw_segments = read_segments(lab_path)
+    key = estimate_key(raw_segments)
+    segments = normalize_segments(raw_segments)
     return {
         "model": "Chord CNN-LSTM ISMIR 2019",
         "dictionary": config.chord_dictionary,
-        "key": estimate_key(segments),
+        "key": key,
         "alignment": "nearest_beat_midpoint",
         "segments": [asdict(segment) for segment in segments],
         "beat_chords": align_to_beats(segments, beats),
