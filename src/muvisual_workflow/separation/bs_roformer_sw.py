@@ -24,10 +24,10 @@ from scipy.io import wavfile
 
 from muvisual_workflow.core.config import NoiseGateConfig, load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
-from muvisual_workflow.core.paths import DATA_DIR, DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, MODEL_DIR
 
 USE_LOCAL_MODEL = True
-LOCAL_MODEL_DIR = DATA_DIR / "model" / "BS-Roformer-SW"
+LOCAL_MODEL_DIR = MODEL_DIR / "BS-Roformer-SW"
 LOCAL_MODEL_BUCKET = "hf://buckets/Trgroup/BS-Roformer-SW"
 LOCAL_MODEL_FILES = ("BS-Roformer-SW.ckpt", "BS-Roformer-SW.yaml")
 DEFAULT_INPUT_DIR = DEVELOP_DATA_DIR / "audio"
