@@ -8,7 +8,7 @@ import sys
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 
 import mutagen
 
@@ -716,7 +716,38 @@ def main() -> None:
         logger.info("No enabled workflows found")
         return
 
-    for config in enabled_configs:
-        run_workflow(config, args)
+    output_dir = args.output.expanduser().resolve()
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="muvisual-output-", dir=TEMP_DIR) as temporary_dir:
+        staged_output = Path(temporary_dir) / "output"
+        if output_dir.exists():
+            shutil.copytree(output_dir, staged_output)
+        else:
+            staged_output.mkdir()
+        staged_args = argparse.Namespace(**vars(args))
+        staged_args.output = staged_output
+        logger.info("Staging all workflows: %s", staged_output)
+        for config in enabled_configs:
+            run_workflow(config, staged_args)
+
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        backup_root = Path(mkdtemp(prefix="muvisual-backup-", dir=TEMP_DIR))
+        backup_output = backup_root / "output"
+        try:
+            if output_dir.exists():
+                logger.info("Backing up previous output before publication: %s", backup_output)
+                output_dir.replace(backup_output)
+            try:
+                staged_output.replace(output_dir)
+            except BaseException:
+                if backup_output.exists():
+                    backup_output.replace(output_dir)
+                raise
+        finally:
+            if not backup_output.exists():
+                backup_root.rmdir()
+        logger.info("Published completed workflows: %s", output_dir)
+        if backup_output.exists():
+            shutil.rmtree(backup_root)
 if __name__ == "__main__":
     main()

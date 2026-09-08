@@ -12,11 +12,12 @@ import argparse
 from dataclasses import dataclass, replace
 from pathlib import Path
 import re
+from tempfile import NamedTemporaryFile
 from typing import Protocol
 
 from muvisual_workflow.core.config import InstrumentAudioToMidiConfig, load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
-from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "stem_gated"
 DEFAULT_OUTPUT = DEVELOP_DATA_DIR / "midi"
@@ -107,9 +108,23 @@ class AudioToMidiStep:
         )
         logger.info("Device: %s", self.device)
         logger.info("Transcribing: %s", input_path)
-        self.model.transcribe(input_path, output_path)
-        if not output_path.is_file():
-            raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_root = PROJECT_ROOT / "temp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            prefix=f".{output_path.stem}.",
+            suffix=output_path.suffix,
+            dir=temporary_root,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        try:
+            self.model.transcribe(input_path, temporary_path)
+            if not temporary_path.is_file() or temporary_path.stat().st_size == 0:
+                raise RuntimeError(f"Audio-to-MIDI did not create: {output_path}")
+            temporary_path.replace(output_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
         logger.info("Wrote: %s", output_path)
         return AudioToMidiResult(output_path, False)

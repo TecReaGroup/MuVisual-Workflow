@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import wave
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from muvisual_workflow.core.config import MidiQuantizationConfig, load_config
 from muvisual_workflow.core.logging import configure_logging, get_logger
-from muvisual_workflow.core.paths import DEVELOP_DATA_DIR
+from muvisual_workflow.core.paths import DEVELOP_DATA_DIR, PROJECT_ROOT
 
 
 DEFAULT_INPUT = DEVELOP_DATA_DIR / "midi_fixed"
@@ -185,7 +186,20 @@ def quantize_midi(
 
     output = destination or source.with_name(f"{source.stem}_quantized{source.suffix}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    midi.save(output)
+    temporary_root = PROJECT_ROOT / "temp"
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(
+        prefix=f".{output.stem}.",
+        suffix=output.suffix,
+        dir=temporary_root,
+        delete=False,
+    ) as temporary_file:
+        temporary_path = Path(temporary_file.name)
+    try:
+        midi.save(temporary_path)
+        temporary_path.replace(output)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return output
 
 
