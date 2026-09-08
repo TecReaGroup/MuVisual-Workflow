@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TextIO
 
 
+MUSCRIPTOR_INSTRUMENT_NAMES = {"drum": "drums"}
 
 def _audio_duration_seconds(source: Path) -> float:
     try:
@@ -175,7 +176,10 @@ class MuscriptorModel:
 
         self.device = device
         self.dtype = dtype
-        self.instruments = list(instruments)
+        self.instruments = [
+            MUSCRIPTOR_INSTRUMENT_NAMES.get(instrument, instrument)
+            for instrument in instruments
+        ]
         self.model = TranscriptionModel.load_model(model_name, device=device, dtype=dtype)
 
     def transcribe(self, input_path: Path, output_path: Path) -> None:

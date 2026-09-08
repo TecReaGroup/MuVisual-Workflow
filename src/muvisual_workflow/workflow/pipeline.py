@@ -666,12 +666,13 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
                 len(unique_audio_files),
                 source,
             )
+            audio_work_dir = batch_work_dir / str(index)
             try:
                 process_audio(
                     source,
                     output_name,
                     output_dir,
-                    batch_work_dir / str(index),
+                    audio_work_dir,
                     config,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
@@ -680,6 +681,16 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
             else:
                 processed_count += 1
                 logger.info("Completed: %s", destination_dir)
+            finally:
+                if audio_work_dir.exists():
+                    try:
+                        shutil.rmtree(audio_work_dir)
+                    except OSError:
+                        logger.warning(
+                            "Could not clean audio workspace; batch cleanup will retry: %s",
+                            audio_work_dir,
+                            exc_info=True,
+                        )
 
     if failures:
         details = "\n".join(f"  {source}: {error}" for source, error in failures)
@@ -744,10 +755,14 @@ def main() -> None:
                     backup_output.replace(output_dir)
                 raise
         finally:
-            if not backup_output.exists():
-                backup_root.rmdir()
+            if not staged_output.exists() or not backup_output.exists():
+                try:
+                    shutil.rmtree(backup_root)
+                    logger.info("Cleaned output backup: %s", backup_root)
+                except OSError:
+                    logger.warning("Could not clean output backup: %s", backup_root, exc_info=True)
+            else:
+                logger.error("Output recovery failed; preserved backup: %s", backup_output)
         logger.info("Published completed workflows: %s", output_dir)
-        if backup_output.exists():
-            shutil.rmtree(backup_root)
 if __name__ == "__main__":
     main()
