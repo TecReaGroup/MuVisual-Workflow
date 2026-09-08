@@ -7,5 +7,5 @@ instruments:
     model: muscriptor
     checkpoint: medium
     target_instruments:
-      - acoustic_bass
       - electric_bass
+      # - acoustic_bass

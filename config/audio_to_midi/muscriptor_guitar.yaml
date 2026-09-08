@@ -7,6 +7,6 @@ instruments:
     model: muscriptor
     checkpoint: medium
     target_instruments:
-      - acoustic_guitar
       - clean_electric_guitar
-      - distorted_electric_guitar
+      # - acoustic_guitar
+      # - distorted_electric_guitar
