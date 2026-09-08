@@ -47,7 +47,7 @@ logger = get_logger("pipeline")
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 STEM_LABEL = re.compile(r"\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
 BS_ROFORMER_SW_STEMS = ("bass", "drums", "guitar", "other", "piano", "vocals")
-CONFIGURED_INSTRUMENT_STEM_NAMES = {"drum": "drums"}
+MODEL_STEM_TO_INSTRUMENT = {"drums": "drum", "vocals": "vocal"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +123,7 @@ def discover_instrument_stems(stem_dir: Path) -> dict[str, Path]:
         if match is None:
             raise RuntimeError(f"Could not identify the instrument for stem: {path.name}")
         instrument = match.group(1).strip().casefold()
+        instrument = MODEL_STEM_TO_INSTRUMENT.get(instrument, instrument)
         if not instrument:
             raise RuntimeError(f"Stem has an empty instrument label: {path.name}")
         if instrument in stems:
@@ -138,7 +139,10 @@ def discover_instrument_stems(stem_dir: Path) -> dict[str, Path]:
 
 def expected_model_stems(model: str) -> tuple[str, ...] | None:
     if model.casefold() == "bs-roformer-sw.ckpt":
-        return BS_ROFORMER_SW_STEMS
+        return tuple(
+            MODEL_STEM_TO_INSTRUMENT.get(stem, stem)
+            for stem in BS_ROFORMER_SW_STEMS
+        )
     return None
 
 
@@ -309,8 +313,7 @@ def restore_configured_stems(
     """Decode separated audio saved by the main workflow for transcription."""
     restored_stems: dict[str, Path] = {}
     for instrument in instruments:
-        stem_name = CONFIGURED_INSTRUMENT_STEM_NAMES.get(instrument, instrument)
-        stored_stem = result_dir / stem_name / f"{output_name}_{stem_name}.mp3"
+        stored_stem = result_dir / instrument / f"{output_name}_{instrument}.mp3"
         if not stored_stem.is_file():
             continue
         restored_stem = stem_dir / f"{instrument}.wav"

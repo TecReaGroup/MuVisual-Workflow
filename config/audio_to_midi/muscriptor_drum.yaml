@@ -7,4 +7,4 @@ instruments:
     model: muscriptor
     checkpoint: medium
     target_instruments:
-      - drums
+      - drum
