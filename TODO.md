@@ -4,3 +4,4 @@
 - [x] drum, vocal 单数命名规范
 - [x] midi 时值过短问题
 - [x] 只有处理完才移动到 output 里面，防止处理失败或者中断污染 output，并清理 temp 目录
+- [x] 添加 voice 转录 midi 相关功能

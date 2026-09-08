@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TextIO
 
 
-MUSCRIPTOR_INSTRUMENT_NAMES = {"drum": "drums"}
+MUSCRIPTOR_INSTRUMENT_NAMES = {"drum": "drums", "vocal": "voice"}
 
 def _audio_duration_seconds(source: Path) -> float:
     try:

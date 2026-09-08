@@ -1,0 +1,9 @@
+enabled: true
+overwrite: false
+instrument: vocal
+
+workflow:
+  - step: audio_to_midi
+    option: muscriptor_vocal
+  - step: midi_quantization
+    option: default

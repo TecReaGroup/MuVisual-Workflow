@@ -1,0 +1,10 @@
+default_instrument: vocal
+device: auto
+dtype: auto
+
+instruments:
+  vocal:
+    model: muscriptor
+    checkpoint: medium
+    target_instruments:
+      - vocal
