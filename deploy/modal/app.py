@@ -2,39 +2,41 @@
 
 from __future__ import annotations
 
-import io
-import shutil
+import os
 import sys
 import tempfile
-import zipfile
-from pathlib import Path, PurePosixPath
+import tomllib
+from pathlib import Path
 from urllib.parse import quote
 
 import modal
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
+from deploy.modal.archive import SUPPORTED_EXTENSIONS, extract_result, zip_directory
 
 APP_NAME = "muvisual-workflow"
-GPU_TYPE = "L40S"
+CONFIG_PATH = Path(
+    os.environ.get("MUVISUAL_MODAL_CONFIG", Path(__file__).with_name("config.toml"))
+)
+with CONFIG_PATH.open("rb") as config_file:
+    GPU_TYPE = tomllib.load(config_file)["compute"]["gpu"]
+if not isinstance(GPU_TYPE, str) or not GPU_TYPE.strip():
+    raise ValueError("Modal config compute.gpu must be a non-empty string")
+REMOTE_CONFIG_PATH = "/root/modal-config.toml"
 CACHE_DIR = "/cache"
 PROJECT_DIR = "/root/muvisual"
-SUPPORTED_EXTENSIONS = {
-    ".wav",
-    ".flac",
-    ".mp3",
-    ".ogg",
-    ".opus",
-    ".m4a",
-    ".aiff",
-    ".ac3",
-}
+MODEL_DIR = f"{PROJECT_DIR}/data/model"
 
 app = modal.App(APP_NAME)
 model_cache = modal.Volume.from_name("muvisual-model-cache", create_if_missing=True)
 read_only_model_cache = model_cache.with_mount_options(read_only=True)
-web_image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
-    "fastapi", "python-multipart"
+web_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install("fastapi", "python-multipart")
+    .add_local_file(CONFIG_PATH, remote_path=REMOTE_CONFIG_PATH, copy=True)
+    .env({"MUVISUAL_MODAL_CONFIG": REMOTE_CONFIG_PATH})
+    .add_local_python_source("deploy.modal.archive", copy=True)
 )
 
 # uv_sync uploads only the dependency manifests. Add the runtime config and
@@ -43,26 +45,27 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg", "libsndfile1", "git")
     .uv_sync()
+    .add_local_file(CONFIG_PATH, remote_path=REMOTE_CONFIG_PATH, copy=True)
     .add_local_dir("config", remote_path=f"{PROJECT_DIR}/config", copy=True)
     .add_local_python_source("muvisual_workflow", copy=True)
+    .add_local_python_source("deploy.modal.archive", copy=True)
+    .run_commands(
+        f"mkdir -p {PROJECT_DIR}/data {PROJECT_DIR}/temp",
+        f"ln -s {CACHE_DIR} {MODEL_DIR}",
+    )
     .env(
         {
+            "MUVISUAL_MODAL_CONFIG": REMOTE_CONFIG_PATH,
             "MUVISUAL_PROJECT_ROOT": PROJECT_DIR,
             "HF_HOME": f"{CACHE_DIR}/huggingface",
+            "HF_HUB_CACHE": f"{CACHE_DIR}/huggingface/hub",
             "TORCH_HOME": f"{CACHE_DIR}/torch",
             "AUDIO_SEPARATOR_MODEL_DIR": f"{CACHE_DIR}/BS-Roformer-SW",
+            "TZ": "Asia/Shanghai",
+            "TMPDIR": f"{PROJECT_DIR}/temp",
         }
     )
 )
-
-
-def _zip_directory(directory: Path) -> bytes:
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
-        for path in sorted(directory.rglob("*")):
-            if path.is_file():
-                zipped.write(path, path.relative_to(directory.parent))
-    return archive.getvalue()
 
 
 @app.function(
@@ -80,34 +83,69 @@ def warmup_models() -> None:
     from muvisual_workflow.audio_to_midi import AudioToMidiStep
     from muvisual_workflow.beat_detection import BeatDetector
     from muvisual_workflow.separation import prepare_local_model
-    from muvisual_workflow.core.config import load_config
+    from muvisual_workflow.core.logging import configure_logging, get_logger
+    from muvisual_workflow.music_metadata.chord_recognition.chord_cnn_lstm import (
+        resolve_repository,
+    )
+    from muvisual_workflow.workflow.pipeline import TEMP_DIR, load_workflow_configs
 
-    config = load_config()
-    warmed: list[str] = []
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    configure_logging()
+    logger = get_logger("modal.warmup")
+    warmed: set[tuple[str, ...]] = set()
+    for config in load_workflow_configs():
+        if not config.enabled:
+            continue
+        logger.info("Preparing models for workflow: %s", config.instrument)
+        separation = config.separation
+        if separation is not None and separation.enabled:
+            key = ("separation", separation.model)
+            if key not in warmed:
+                prepare_local_model()
+                warmed.add(key)
 
-    if config.separation is not None:
-        prepare_local_model()
-        warmed.append(config.separation.model)
-
-    if config.beat_detection is not None and config.beat_detection.enabled:
         beat_config = config.beat_detection
-        beat_detector = BeatDetector(beat_config.model, device="cpu", dbn=beat_config.dbn)
-        beat_detector.release()
-        warmed.append(beat_config.model)
+        if beat_config is not None and beat_config.enabled:
+            key = (beat_config.algorithm, beat_config.model)
+            if key not in warmed:
+                # Madmom ships its weights with the installed package.
+                if beat_config.algorithm == "beat_this":
+                    detector = BeatDetector(
+                        beat_config.model, device="cpu", dbn=beat_config.dbn
+                    )
+                    detector.release()
+                warmed.add(key)
 
-    if config.audio_to_midi is not None:
-        for instrument, instrument_config in config.audio_to_midi.instruments.items():
-            cpu_config = replace(
-                instrument_config,
-                device="cpu",
-                dtype="float32" if instrument_config.model == "muscriptor" else None,
-            )
-            step = AudioToMidiStep(cpu_config)
-            step.release()
-            warmed.append(f"{instrument_config.model}:{instrument}")
+        audio_to_midi = config.audio_to_midi
+        if audio_to_midi is not None and audio_to_midi.enabled:
+            for instrument_config in audio_to_midi.instruments.values():
+                key = (
+                    "audio_to_midi", instrument_config.model, instrument_config.checkpoint
+                )
+                if key in warmed:
+                    continue
+                cpu_config = replace(
+                    instrument_config,
+                    device="cpu",
+                    dtype="float32" if instrument_config.model == "muscriptor" else None,
+                )
+                step = AudioToMidiStep(cpu_config)
+                step.release()
+                warmed.add(key)
+
+        for metadata_config in config.music_metadata:
+            chord_config = metadata_config.chord_recognition
+            if metadata_config.enabled and chord_config is not None:
+                repository = resolve_repository(chord_config)
+                warmed.add(
+                    ("chord_cnn_lstm", str(repository), chord_config.chord_dictionary)
+                )
 
     model_cache.commit()
-    print("Model warmup complete: " + ", ".join(warmed))
+    logger.info(
+        "Model warmup complete: %s",
+        ", ".join(":".join(key) for key in sorted(warmed)),
+    )
 
 
 @app.function(
@@ -121,12 +159,12 @@ def warmup_models() -> None:
 )
 def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     """Process one serialized audio upload in a GPU container."""
-    from muvisual_workflow.core.config import load_config
+    from muvisual_workflow.core.logging import configure_logging
     from muvisual_workflow.workflow.pipeline import (
         TEMP_DIR,
-        process_audio as run_pipeline,
+        load_workflow_configs,
+        process_audio_workflows,
         read_output_name,
-        resolve_runtime_config,
     )
 
     if suffix not in SUPPORTED_EXTENSIONS:
@@ -134,8 +172,13 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
     if not payload:
         raise ValueError("Audio file is empty")
 
-    config = resolve_runtime_config(load_config(), _ApiArgs())
+    # Reused containers must see the latest committed warmup before loading models.
+    read_only_model_cache.reload()
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    configure_logging()
+    configs = load_workflow_configs()
+    if not any(config.enabled for config in configs):
+        raise RuntimeError("No enabled workflows found")
     with tempfile.TemporaryDirectory(prefix="muvisual-api-", dir=TEMP_DIR) as temp_dir:
         work_root = Path(temp_dir)
         source = work_root / f"input{suffix}"
@@ -143,14 +186,14 @@ def process_audio_file(payload: bytes, suffix: str) -> tuple[str, bytes]:
         output_name = read_output_name(source)
         output_root = work_root / "output"
         output_root.mkdir()
-        run_pipeline(
+        process_audio_workflows(
             source,
             output_name,
             output_root,
             work_root / "work",
-            config,
+            configs,
         )
-        archive = _zip_directory(output_root / output_name)
+        archive = zip_directory(output_root / output_name)
     return output_name, archive
 
 
@@ -203,48 +246,6 @@ def api() -> FastAPI:
     return web_app
 
 
-class _ApiArgs:
-    """Pipeline override namespace representing API defaults."""
-
-    model = None
-    audio_to_midi_model = None
-    audio_to_midi_checkpoint = None
-    device = None
-    segment_hop_size = None
-    segment_size = None
-
-
-def _extract_result(archive: bytes, output_dir: Path, output_name: str) -> Path:
-    """Validate and atomically replace one extracted result directory."""
-    destination = output_dir / output_name
-    with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
-        members = zipped.infolist()
-        if not members:
-            raise RuntimeError("Modal returned an empty ZIP archive")
-        for member in members:
-            parts = PurePosixPath(member.filename).parts
-            if not parts or parts[0] != output_name or ".." in parts:
-                raise RuntimeError(f"Unsafe ZIP member: {member.filename}")
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix="muvisual-download-", dir=output_dir
-        ) as temp_dir:
-            staging_root = Path(temp_dir)
-            zipped.extractall(staging_root)
-            staged_result = staging_root / output_name
-            if not staged_result.is_dir():
-                raise RuntimeError(
-                    f"ZIP does not contain the expected directory: {output_name}"
-                )
-            if destination.exists():
-                if not destination.is_dir():
-                    raise RuntimeError(f"Output path is not a directory: {destination}")
-                shutil.rmtree(destination)
-            shutil.move(str(staged_result), destination)
-    return destination
-
-
 @app.local_entrypoint()
 def main(
     input_dir: str = "data/input",
@@ -270,6 +271,9 @@ def main(
     if not audio_files:
         raise FileNotFoundError(f"No supported audio files found in: {source_dir}")
 
+    warmup_models.remote()
+    print("Model warmup completed")
+
     failures: list[tuple[Path, str]] = []
     for index, audio_path in enumerate(audio_files, start=1):
         print(f"[{index}/{len(audio_files)}] Uploading: {audio_path}")
@@ -277,7 +281,7 @@ def main(
             output_name, archive = process_audio_file.remote(
                 audio_path.read_bytes(), audio_path.suffix.lower()
             )
-            result_path = _extract_result(archive, destination_dir, output_name)
+            result_path = extract_result(archive, destination_dir, output_name)
         except Exception as exc:
             failures.append((audio_path, str(exc)))
             print(f"Failed: {audio_path}: {exc}", file=sys.stderr)

@@ -537,7 +537,9 @@ def process_audio(
             result_dir,
             output_name,
             stored_stem_instruments,
-            tuple(instrument_configs),
+            tuple(instrument_configs)
+            if config.audio_to_midi is not None and config.audio_to_midi.enabled
+            else (),
             metadata_enabled,
         )
         if not path.is_file()
@@ -585,15 +587,69 @@ def resolve_runtime_config(
 
 
 def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
-    config = resolve_runtime_config(config, args)
-    if not config.enabled:
-        logger.info("Instrument workflow %s is disabled", config.instrument)
+    """Run a single selected workflow through the batch entrypoint."""
+    run_workflows([config], args)
+
+
+def load_workflow_configs(path: Path | None = None) -> list[MuVisualConfig]:
+    """Load the explicit workflow or the main workflow and its ordered instruments."""
+    if path is not None:
+        return [load_config(path)]
+    main_config = load_config(DEFAULT_CONFIG_PATH)
+    configs = [main_config]
+    for instrument in main_config.instrument_order:
+        instrument_path = WORKFLOW_INSTRUMENT_DIR / f"workflow_{instrument}.yaml"
+        instrument_config = load_config(instrument_path)
+        if instrument_config.instrument != instrument:
+            raise ValueError(
+                f"Instrument workflow {instrument_path} configures "
+                f"{instrument_config.instrument!r}, expected {instrument!r}"
+            )
+        configs.append(instrument_config)
+    return configs
+
+
+def process_audio_workflows(
+    source: Path,
+    output_name: str,
+    output_dir: Path,
+    work_dir: Path,
+    configs: list[MuVisualConfig],
+) -> None:
+    """Run the ordered workflows for one file, reusing previously stored stems."""
+    for index, config in enumerate(configs):
+        if not config.enabled:
+            continue
+        separation = config.separation
+        audio_to_midi = config.audio_to_midi
+        stem_instruments = (
+            expected_model_stems(separation.model)
+            if separation is not None and separation.enabled
+            else ()
+        )
+        midi_instruments = (
+            tuple(audio_to_midi.instruments)
+            if audio_to_midi is not None and audio_to_midi.enabled
+            else ()
+        )
+        metadata_enabled = any(item.enabled for item in config.music_metadata) or (
+            config.beat_detection is not None and config.beat_detection.enabled
+        )
+        if not config.overwrite and output_is_complete(
+            output_dir, output_name, stem_instruments, midi_instruments, metadata_enabled
+        ):
+            logger.info("Skipping completed workflow %s: %s", config.instrument, source)
+            continue
+        logger.info("Running workflow %s: %s", config.instrument, source)
+        process_audio(source, output_name, output_dir, work_dir / str(index), config)
+
+
+def run_workflows(configs: list[MuVisualConfig], args: argparse.Namespace) -> None:
+    """Run each input file through all enabled workflows in order."""
+    configs = [resolve_runtime_config(config, args) for config in configs if config.enabled]
+    if not configs:
+        logger.info("No enabled workflows found")
         return
-    logger.info("Selected instrument workflow: %s", config.instrument)
-    instrument_configs = (
-        config.audio_to_midi.instruments if config.audio_to_midi is not None else {}
-    )
-    separation_model = config.separation.model if config.separation is not None else None
     input_dir = args.input.expanduser().resolve()
     output_dir = args.output.expanduser().resolve()
     if not input_dir.is_dir():
@@ -625,41 +681,11 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
         else:
             unique_audio_files.append((source, output_name))
 
-    separation_enabled = config.separation is not None and config.separation.enabled
-    audio_to_midi_enabled = config.audio_to_midi is not None and config.audio_to_midi.enabled
-    stem_instruments = (
-        expected_model_stems(separation_model)
-        if separation_enabled and separation_model is not None
-        else ()
-    )
-    midi_instruments = tuple(instrument_configs) if audio_to_midi_enabled else ()
-    metadata_enabled = any(
-        metadata_config.enabled for metadata_config in config.music_metadata
-    ) or (
-        config.beat_detection is not None and config.beat_detection.enabled
-    )
     processed_count = 0
-    skipped_count = 0
     with TemporaryDirectory(prefix="muvisual-batch-", dir=TEMP_DIR) as temporary_dir:
         batch_work_dir = Path(temporary_dir)
         for index, (source, output_name) in enumerate(unique_audio_files, start=1):
             destination_dir = output_dir / output_name
-            if not config.overwrite and output_is_complete(
-                output_dir,
-                output_name,
-                stem_instruments,
-                midi_instruments,
-                metadata_enabled,
-            ):
-                skipped_count += 1
-                logger.info(
-                    "[Skip %d/%d] Already completed: %s",
-                    index,
-                    len(unique_audio_files),
-                    destination_dir,
-                )
-                continue
-
             logger.info(
                 "[Process %d/%d] Processing: %s",
                 index,
@@ -668,12 +694,12 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
             )
             audio_work_dir = batch_work_dir / str(index)
             try:
-                process_audio(
+                process_audio_workflows(
                     source,
                     output_name,
                     output_dir,
                     audio_work_dir,
-                    config,
+                    configs,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 failures.append((source, str(exc)))
@@ -697,9 +723,8 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
         logger.error("%d of %d file(s) failed:\n%s", len(failures), len(audio_files), details)
         raise SystemExit(f"\n{len(failures)} of {len(audio_files)} file(s) failed:\n{details}")
     logger.info(
-        "Processed %d file(s); skipped %d completed file(s).",
+        "Completed workflows for %d file(s).",
         processed_count,
-        skipped_count,
     )
 
 
@@ -707,20 +732,7 @@ def run_workflow(config: MuVisualConfig, args: argparse.Namespace) -> None:
 def main() -> None:
     configure_logging()
     args = parse_args()
-    if args.config is not None:
-        configs = [load_config(args.config.expanduser().resolve())]
-    else:
-        main_config = load_config(DEFAULT_CONFIG_PATH)
-        configs = [main_config]
-        for instrument in main_config.instrument_order:
-            instrument_path = WORKFLOW_INSTRUMENT_DIR / f"workflow_{instrument}.yaml"
-            instrument_config = load_config(instrument_path)
-            if instrument_config.instrument != instrument:
-                raise ValueError(
-                    f"Instrument workflow {instrument_path} configures "
-                    f"{instrument_config.instrument!r}, expected {instrument!r}"
-                )
-            configs.append(instrument_config)
+    configs = load_workflow_configs(args.config)
 
     enabled_configs = [config for config in configs if config.enabled]
     if not enabled_configs:
@@ -738,8 +750,7 @@ def main() -> None:
         staged_args = argparse.Namespace(**vars(args))
         staged_args.output = staged_output
         logger.info("Staging all workflows: %s", staged_output)
-        for config in enabled_configs:
-            run_workflow(config, staged_args)
+        run_workflows(enabled_configs, staged_args)
 
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         backup_root = Path(mkdtemp(prefix="muvisual-backup-", dir=TEMP_DIR))
