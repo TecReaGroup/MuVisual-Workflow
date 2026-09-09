@@ -1,5 +1,4 @@
 enabled: true
-overwrite: false
 instrument: guitar
 
 workflow:

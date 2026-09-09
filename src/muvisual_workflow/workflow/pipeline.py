@@ -46,7 +46,6 @@ TEMP_DIR = PROJECT_ROOT / "temp"
 logger = get_logger("pipeline")
 INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 STEM_LABEL = re.compile(r"\(([^)]+)\)(?=[_\s.-]|$)", re.IGNORECASE)
-BS_ROFORMER_SW_STEMS = ("bass", "drums", "guitar", "other", "piano", "vocals")
 MODEL_STEM_TO_INSTRUMENT = {"drums": "drum", "vocals": "vocal"}
 
 
@@ -137,15 +136,6 @@ def discover_instrument_stems(stem_dir: Path) -> dict[str, Path]:
     return stems
 
 
-def expected_model_stems(model: str) -> tuple[str, ...] | None:
-    if model.casefold() == "bs-roformer-sw.ckpt":
-        return tuple(
-            MODEL_STEM_TO_INSTRUMENT.get(stem, stem)
-            for stem in BS_ROFORMER_SW_STEMS
-        )
-    return None
-
-
 def resolve_instrument_configs(
     config: AudioToMidiConfig,
     args: argparse.Namespace,
@@ -196,28 +186,6 @@ def expected_output_files(
     for instrument in midi_instruments:
         files.append(directory / instrument / f"{output_name}_{instrument}.mid")
     return tuple(files)
-
-
-def output_is_complete(
-    output_root: Path,
-    output_name: str,
-    stem_instruments: tuple[str, ...] | None,
-    midi_instruments: tuple[str, ...],
-    metadata_enabled: bool,
-) -> bool:
-    if stem_instruments is None:
-        return False
-    destination = output_root / output_name
-    return all(
-        path.is_file()
-        for path in expected_output_files(
-            destination,
-            output_name,
-            stem_instruments,
-            midi_instruments,
-            metadata_enabled,
-        )
-    )
 
 
 def clear_cuda_cache() -> None:
@@ -620,32 +588,15 @@ def process_audio_workflows(
     for index, config in enumerate(configs):
         if not config.enabled:
             continue
-        separation = config.separation
-        audio_to_midi = config.audio_to_midi
-        stem_instruments = (
-            expected_model_stems(separation.model)
-            if separation is not None and separation.enabled
-            else ()
-        )
-        midi_instruments = (
-            tuple(audio_to_midi.instruments)
-            if audio_to_midi is not None and audio_to_midi.enabled
-            else ()
-        )
-        metadata_enabled = any(item.enabled for item in config.music_metadata) or (
-            config.beat_detection is not None and config.beat_detection.enabled
-        )
-        if not config.overwrite and output_is_complete(
-            output_dir, output_name, stem_instruments, midi_instruments, metadata_enabled
-        ):
-            logger.info("Skipping completed workflow %s: %s", config.instrument, source)
-            continue
         logger.info("Running workflow %s: %s", config.instrument, source)
         process_audio(source, output_name, output_dir, work_dir / str(index), config)
 
 
 def run_workflows(configs: list[MuVisualConfig], args: argparse.Namespace) -> None:
     """Run each input file through all enabled workflows in order."""
+    overwrite = next(
+        (config.overwrite for config in configs if config.instrument == "main"), False
+    )
     configs = [resolve_runtime_config(config, args) for config in configs if config.enabled]
     if not configs:
         logger.info("No enabled workflows found")
@@ -669,7 +620,15 @@ def run_workflows(configs: list[MuVisualConfig], args: argparse.Namespace) -> No
     named_audio_files: list[tuple[Path, str]] = []
     for source in audio_files:
         try:
-            named_audio_files.append((source, read_output_name(source)))
+            output_name = read_output_name(source)
+            if not overwrite and (output_dir / output_name).is_dir():
+                logger.info(
+                    "Skipping existing output directory: %s: %s",
+                    source,
+                    output_dir / output_name,
+                )
+                continue
+            named_audio_files.append((source, output_name))
         except RuntimeError as exc:
             failures.append((source, str(exc)))
 
@@ -750,7 +709,7 @@ def main() -> None:
         staged_args = argparse.Namespace(**vars(args))
         staged_args.output = staged_output
         logger.info("Staging all workflows: %s", staged_output)
-        run_workflows(enabled_configs, staged_args)
+        run_workflows(configs, staged_args)
 
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         backup_root = Path(mkdtemp(prefix="muvisual-backup-", dir=TEMP_DIR))

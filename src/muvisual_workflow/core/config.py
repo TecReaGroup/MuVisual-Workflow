@@ -526,6 +526,8 @@ def load_config(path: Path | None = None) -> MuVisualConfig:
         "instrument",
     ).casefold()
     instrument_order = _instrument_order(workflow_payload.get("instruments"))
+    if instrument != "main" and "overwrite" in workflow_payload:
+        raise ValueError("Only the main workflow may configure overwrite")
     if instrument != "main" and instrument_order:
         raise ValueError("Only the main workflow may configure instruments")
     workflow = _load_workflow(workflow_payload)

@@ -1,5 +1,4 @@
 enabled: true
-overwrite: false
 instrument: other
 
 workflow:
