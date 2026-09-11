@@ -25,7 +25,6 @@ Thumbs.db
 
 # Local environment and logs
 .env
-.env.*
 *.log
 
 # Keep directory placeholders if they are added to the repository.
